@@ -1,9 +1,14 @@
+"use client";
+
 import Link from "next/link";
+import { useLanguage } from "@/context/LanguageContext";
 import type { Issue } from "@/types/issue";
 import { PriorityBadge } from "@/components/PriorityBadge";
 import { StatusBadge } from "@/components/StatusBadge";
 
-export function IssueCard({ issue }: { issue: Issue }) {
+export function IssueCard({ issue, detailsHref }: { issue: Issue; detailsHref?: string }) {
+  const { t } = useLanguage();
+
   return (
     <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-emerald-200 hover:shadow-md">
       <div className="flex items-start justify-between gap-4">
@@ -18,18 +23,18 @@ export function IssueCard({ issue }: { issue: Issue }) {
       <p className="mt-3 line-clamp-3 text-sm leading-6 text-slate-600">{issue.description}</p>
 
       <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-        <span>{issue.location.city ?? "South Africa"}</span>
+        <span>{issue.location.city ?? t("issueCardLocation")}</span>
         <span>•</span>
         <span>{new Date(issue.reportedAt).toLocaleDateString("en-ZA")}</span>
       </div>
 
       <div className="mt-4 flex items-center justify-between">
-        <StatusBadge status={issue.status} />
+        <StatusBadge status={issue.status} staffView={Boolean(detailsHref)} />
         <Link
-          href={`/issues/${issue.id}`}
+          href={detailsHref ?? `/issues/${issue.id}`}
           className="text-sm font-semibold text-emerald-700 transition hover:text-emerald-800"
         >
-          View Details
+          {t("viewDetails")}
         </Link>
       </div>
     </article>

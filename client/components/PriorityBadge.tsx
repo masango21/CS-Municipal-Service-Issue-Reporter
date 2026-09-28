@@ -1,3 +1,6 @@
+"use client";
+
+import { useLanguage } from "@/context/LanguageContext";
 import type { IssuePriority } from "@/types/issue";
 
 const priorityStyles: Record<IssuePriority, string> = {
@@ -8,9 +11,18 @@ const priorityStyles: Record<IssuePriority, string> = {
 };
 
 export function PriorityBadge({ priority }: { priority: IssuePriority }) {
+  const { t } = useLanguage();
+
+  const translatedPriority: Record<IssuePriority, string> = {
+    Low: t("priorityLow"),
+    Medium: t("priorityMedium"),
+    High: t("priorityHigh"),
+    Critical: t("priorityCritical"),
+  };
+
   return (
     <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${priorityStyles[priority]}`}>
-      {priority}
+      {translatedPriority[priority]}
     </span>
   );
 }

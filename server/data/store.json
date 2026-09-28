@@ -1,0 +1,13 @@
+{
+  "reports": [],
+  "users": [],
+  "admins": [
+    {
+      "id": "ADM-1790583121718-2c4062",
+      "name": "Sipho",
+      "email": "sipho@municipal.com",
+      "password": "scrypt:e627517ce299eb8f7587684e14089c6f:9e59db0a860fe66e949e2af6c5f4dccec7503e0cf75bbaebb1639a94bb2adcb9d536a5d0bba599abec5cae5c55a238abf8c28b20eb7ee92c0e9969689ad1b7f9",
+      "createdAt": "2026-09-28T08:12:01.749Z"
+    }
+  ]
+}

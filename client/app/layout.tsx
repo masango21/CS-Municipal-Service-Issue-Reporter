@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { NavBar } from "@/components/NavBar";
+import { AuthProvider } from "@/context/AuthContext";
+import { LanguageProvider } from "@/context/LanguageContext";
 import { ReportsProvider } from "@/context/ReportsContext";
 
 const geistSans = Geist({
@@ -26,12 +28,16 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full bg-slate-50 text-slate-900">
-        <ReportsProvider>
-          <div className="min-h-screen">
-            <NavBar />
-            {children}
-          </div>
-        </ReportsProvider>
+        <LanguageProvider>
+          <AuthProvider>
+            <ReportsProvider>
+              <div className="min-h-screen">
+                <NavBar />
+                {children}
+              </div>
+            </ReportsProvider>
+          </AuthProvider>
+        </LanguageProvider>
       </body>
     </html>
   );

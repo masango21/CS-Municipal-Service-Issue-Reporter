@@ -1,3 +1,6 @@
+"use client";
+
+import { useLanguage } from "@/context/LanguageContext";
 import type { IssueStatus } from "@/types/issue";
 
 const statusStyles: Record<IssueStatus, string> = {
@@ -9,10 +12,21 @@ const statusStyles: Record<IssueStatus, string> = {
   Closed: "bg-gray-200 text-gray-700",
 };
 
-export function StatusBadge({ status }: { status: IssueStatus }) {
+export function StatusBadge({ status, staffView = false }: { status: IssueStatus; staffView?: boolean }) {
+  const { t } = useLanguage();
+
+  const translatedStatus: Record<IssueStatus, string> = {
+    Reported: t("statusReported"),
+    "Under Review": t("statusUnderReview"),
+    Assigned: t("statusAssigned"),
+    "In Progress": t("statusInProgress"),
+    Resolved: t("statusResolved"),
+    Closed: t("statusClosed"),
+  };
+
   return (
     <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusStyles[status]}`}>
-      {status}
+      {staffView && status === "Reported" ? "New" : translatedStatus[status]}
     </span>
   );
 }

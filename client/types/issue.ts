@@ -15,6 +15,23 @@ export type IssueLocation = {
   municipality?: string;
 };
 
+export type StaffNote = {
+  id: string;
+  authorId: string;
+  authorName: string;
+  text: string;
+  createdAt: string;
+};
+
+export type ResidentStatusUpdate = {
+  id: string;
+  authorId: string;
+  authorName: string;
+  text: string;
+  status: IssueStatus;
+  createdAt: string;
+};
+
 export type Issue = {
   id: string;
   title: string;
@@ -26,6 +43,17 @@ export type Issue = {
   reportedBy: string;
   reportedAt: string;
   image?: string;
+  verified?: boolean;
+  verifiedAt?: string;
+  verifiedBy?: string;
+  department?: string;
+  maintenanceTeam?: string;
+  assignedStaffId?: string;
+  assignedStaffName?: string;
+  staffNotes?: StaffNote[];
+  residentUpdates?: ResidentStatusUpdate[];
+  duplicateOf?: string;
+  duplicateReports?: Array<{ id: string; title: string }>;
 };
 
 export type IssueDraft = Omit<Issue, "id" | "reportedAt" | "status"> & {
