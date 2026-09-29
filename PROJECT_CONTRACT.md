@@ -162,7 +162,7 @@ Deliverable:
 - Initial UI screens / design reference
 
 ### Phase 3 — Frontend Development
-Status: In progress
+Status: Completed (verified 2026-09-29)
 
 Purpose:
 - implement the approved interface as a responsive web application
@@ -313,7 +313,10 @@ Deliverable:
 ### Current timeline
 - Phase 1: Completed
 - Phase 2: Completed
-- Phase 3: In progress
+- Phase 3: Completed
+
+### Scope note
+The current governing project instructions keep this phase frontend-only. Although server implementation exists in the repository, backend rollout and production deployment remain future work and are not claimed as completed by this contract.
 
 ### Suggested next milestone schedule
 - Sprint 1: foundation complete
@@ -345,8 +348,9 @@ Current status:
 - Problem defined
 - Solution framed
 - Frontend design foundation established
-- Core app structure underway
+- Resident and admin frontend workflows implemented and verified
 - Zero-report starting condition preserved
+- Production deployment not performed
 
 ## 16. Planned Commit Milestones
 
@@ -368,4 +372,4 @@ Examples of meaningful development checkpoints:
 
 ## 17. Final Note
 
-This project is being built as a frontend-first municipal service reporting application with a clear path to later backend implementation. The primary goal at this stage is to prove the user flow works and to prepare a clean foundation for the next engineering phases.
+This project is a frontend-first municipal service reporting application with a clear path to later backend implementation. The frontend phase is complete; backend rollout and production deployment remain future phases under the current project scope.

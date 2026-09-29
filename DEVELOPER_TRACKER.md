@@ -3,20 +3,20 @@
 ## Project Status Summary
 
 - Project: Municipal Service Issue Reporter
-- Current Phase: Phase 4 — Backend Development
-- Status: Staff operations workflow implemented; API tests and client production build pass
-- Backend Phase: Complete for database-backed foundation
+- Current Phase: Phase 3 — Frontend Development (complete)
+- Status: Frontend flows and isolated API integration verified; deployment not verified
+- Backend Phase: Server code exists in the repository but is outside the current frontend-only scope
 - Zero-report rule: Verified and maintained
-- Staff account provisioning: Two invite keys configured in ignored `server/.env.staff-invites` and verified
+- Staff account provisioning: Two invite keys configured in ignored `server/.env` and verified in an isolated test
 
 ## Phase Tracker
 
 - [x] Phase 1 — Proposed Solution & Requirements
 - [x] Phase 2 — UI/UX Screen Design
 - [x] Phase 3 — Frontend Development
-- [x] Phase 4 — Backend Development
-- [x] Phase 5 — Testing, QA, and Refinement
-- [x] Phase 6 — Deployment and Production Readiness
+- [ ] Phase 4 — Backend Development (future phase; outside current scope)
+- [ ] Phase 5 — Testing, QA, and Refinement (broader release QA remains future work)
+- [ ] Phase 6 — Deployment and Production Readiness (not deployed or verified)
 
 ## Frontend Completion Tracker
 
@@ -70,17 +70,21 @@
 
 ## Verification Evidence
 
-- Client build: `cd client && npm run build` — compiled successfully
-- Backend tests: `cd server && npm test` — 7 passed, 0 failed
+- Client build: `cd client && npm run build` — compiled successfully on the current snapshot
+- Backend tests: 7 passed, 0 failed in an isolated temporary copy using file-store mode
+- Browser smoke test: resident registration, map pin/category selection, report submission, staff registration/login, triage update, and resident-visible update passed against a disposable API
+- Privacy check: resident view displayed the public update and omitted the internal staff note
+- Data safety: isolated tests left the real local store at 0 reports and preserved its existing account
 - Targeted client lint: 0 errors; two existing image optimization warnings
 - Full client lint still reports an existing `LanguageContext.tsx` set-state-in-effect error
 - Live API report list: 0 reports after implementation and tests
+- Deployment: not performed or verified
 
 ## Notes
 
-- The app uses the shared Express API with PostgreSQL/file-store persistence and a local client fallback.
-- `JWT_SECRET` and two staff invite keys are configured in local ignored server environment files; invite values are intentionally not recorded in tracked documentation.
-- Both configured invite keys were accepted by the API, and an unconfigured key was rejected.
+- Existing server code supports PostgreSQL/file-store persistence; this does not change the current frontend-only phase boundary.
+- `JWT_SECRET` and two staff invite keys are configured in the ignored local `server/.env`; values are intentionally not recorded in tracked documentation.
+- Both configured invite keys were accepted by the isolated API test, and an unconfigured key was rejected.
 - The app must continue to start in a zero-report state until a real resident submission occurs.
 
 ## Next Up
@@ -89,6 +93,6 @@
 - [x] Implement authentication and persistence layer
 - [x] Add database-backed report storage
 - [x] Connect frontend to backend services
-- [x] Final QA and deployment preparation
+- [x] Frontend build and isolated resident/staff workflow checks
 - [x] Configure and verify both staff invite keys
-- [ ] Perform live staff login/triage browser verification with an authorized staff account
+- [ ] Backend phase and deployment work (outside current scope; requires a later phase decision)
