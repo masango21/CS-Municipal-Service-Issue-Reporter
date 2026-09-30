@@ -16,6 +16,7 @@ const LocationPicker = dynamic(
 );
 
 const priorities: IssuePriority[] = ["Low", "Medium", "High", "Critical"];
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 
 export default function ReportIssuePage() {
   const router = useRouter();
@@ -26,13 +27,12 @@ export default function ReportIssuePage() {
   const [category, setCategory] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [city, setCity] = useState("Pretoria");
-  const [municipality, setMunicipality] = useState("City of Tshwane");
-  const [address, setAddress] = useState("");
   const [priority, setPriority] = useState<IssuePriority>("High");
   const [image, setImage] = useState("");
   const [imageName, setImageName] = useState("");
   const [selectedLocation, setSelectedLocation] = useState<IssueLocation | null>(null);
+  const [locationStatus, setLocationStatus] = useState<"idle" | "loading" | "resolved" | "error">("idle");
+  const [locationError, setLocationError] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -40,6 +40,48 @@ export default function ReportIssuePage() {
     if (!isAuthReady || residentUser) return;
     router.replace(adminUser ? "/admin/dashboard" : "/login?next=/report");
   }, [adminUser, isAuthReady, residentUser, router]);
+
+  useEffect(() => {
+    const latitude = selectedLocation?.latitude;
+    const longitude = selectedLocation?.longitude;
+    if (latitude === undefined || longitude === undefined) return;
+
+    const controller = new AbortController();
+    let active = true;
+
+    void fetch(`${API_BASE_URL}/api/location/resolve`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ latitude, longitude }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json() as { location?: IssueLocation; message?: string };
+        if (!response.ok || !payload.location?.municipalityId) {
+          throw new Error(payload.message ?? "We couldn't determine the municipality for this location. Please move the pin and try again.");
+        }
+        if (!active) return;
+        setSelectedLocation(payload.location);
+        setLocationStatus("resolved");
+      })
+      .catch((lookupError: unknown) => {
+        if (!active || (lookupError instanceof DOMException && lookupError.name === "AbortError")) return;
+        setLocationStatus("error");
+        setLocationError(lookupError instanceof Error ? lookupError.message : "Location could not be determined.");
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [selectedLocation?.latitude, selectedLocation?.longitude]);
+
+  const handleLocationChange = (location: IssueLocation) => {
+    setLocationStatus("loading");
+    setLocationError("");
+    setSelectedLocation({ latitude: location.latitude, longitude: location.longitude });
+  };
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -72,6 +114,8 @@ export default function ReportIssuePage() {
 
   const handleResetSelection = () => {
     setSelectedLocation(null);
+    setLocationStatus("idle");
+    setLocationError("");
     setCategory("");
     setError("");
   };
@@ -84,7 +128,7 @@ export default function ReportIssuePage() {
       return;
     }
 
-    if (!category || !title.trim() || !description.trim() || !city.trim() || !municipality.trim() || !selectedLocation) {
+    if (!category || !title.trim() || !description.trim() || !selectedLocation?.municipalityId || locationStatus !== "resolved") {
       setError(t("reportValidationError"));
       return;
     }
@@ -93,12 +137,7 @@ export default function ReportIssuePage() {
       title: title.trim(),
       category,
       description: description.trim(),
-      location: {
-        ...selectedLocation,
-        address: address.trim() || selectedLocation.address || `${city}, South Africa`,
-        city: city.trim(),
-        municipality: municipality.trim() || selectedLocation.municipality || city.trim(),
-      },
+      location: selectedLocation,
       priority,
       reportedBy: residentUser.name,
       image: image || undefined,
@@ -160,44 +199,27 @@ export default function ReportIssuePage() {
               />
             </div>
 
-            <div className="grid gap-5 md:grid-cols-2">
+            <section aria-label="Detected location" className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
               <div>
-                <label htmlFor="city" className="mb-2 block text-sm font-medium text-slate-700">
-                  {t("cityLabel")}
-                </label>
-                <input
-                  id="city"
-                  value={city}
-                  onChange={(event) => setCity(event.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
-                />
+                <p className="text-xs font-semibold uppercase text-slate-500">{t("addressLabel")}</p>
+                <p className="mt-1 text-sm text-slate-800">
+                  {locationStatus === "loading" ? "Finding address..." : selectedLocation?.address || "Select a point on the map"}
+                </p>
               </div>
-
               <div>
-                <label htmlFor="municipality" className="mb-2 block text-sm font-medium text-slate-700">
-                  {t("municipalityLabel")}
-                </label>
-                <input
-                  id="municipality"
-                  value={municipality}
-                  onChange={(event) => setMunicipality(event.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
-                />
+                <p className="text-xs font-semibold uppercase text-slate-500">{t("municipalityLabel")}</p>
+                <p className="mt-1 text-sm text-slate-800">
+                  {locationStatus === "loading" ? "Determining municipality..." : selectedLocation?.municipality || "Not determined"}
+                </p>
               </div>
-            </div>
-
-            <div>
-              <label htmlFor="address" className="mb-2 block text-sm font-medium text-slate-700">
-                {t("addressLabel")}
-              </label>
-              <input
-                id="address"
-                value={address}
-                onChange={(event) => setAddress(event.target.value)}
-                placeholder={t("addressPlaceholder")}
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
-              />
-            </div>
+              {locationStatus === "error" && <p role="alert" className="text-sm text-rose-700">{locationError}</p>}
+              {locationStatus === "resolved" && !selectedLocation?.address && (
+                <p role="status" className="text-sm text-amber-800">Address could not be detected. The selected coordinates and municipality are confirmed.</p>
+              )}
+              {selectedLocation?.geocodingAttribution && (
+                <p className="text-xs text-slate-500">{selectedLocation.geocodingAttribution}</p>
+              )}
+            </section>
 
             <div>
               <label htmlFor="priority" className="mb-2 block text-sm font-medium text-slate-700">
@@ -250,7 +272,7 @@ export default function ReportIssuePage() {
             )}
 
             <button
-              disabled={isSubmitting}
+              disabled={isSubmitting || locationStatus !== "resolved" || !selectedLocation?.municipalityId}
               type="submit"
               className="w-full rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-60"
             >
@@ -267,8 +289,11 @@ export default function ReportIssuePage() {
             <LocationPicker
               value={selectedLocation}
               selectedCategory={category}
-              onSelect={setSelectedLocation}
+              onSelect={handleLocationChange}
             />
+            <p className="text-xs leading-5 text-slate-500">
+              Municipality boundaries are checked against MDB data. Address lookup uses the configured geocoding service; selected coordinates are sent to that service. © OpenStreetMap contributors.
+            </p>
 
             {selectedLocation ? (
               <div className="space-y-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">

@@ -9,6 +9,12 @@ import { ReportMap } from "@/components/ReportMap";
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import { useReports } from "@/context/ReportsContext";
+import {
+  fetchStaffMunicipalities,
+  lockStaffMunicipality,
+  verifyStaffMunicipality,
+  type Municipality,
+} from "@/lib/municipalities";
 
 const statusOptions = [
   "Reported",
@@ -22,15 +28,23 @@ const statusOptions = [
 export default function AdminDashboardPage() {
   const router = useRouter();
   const { adminUser, residentUser, isAuthReady } = useAuth();
-  const { reports, stats, refreshReports, fetchStaffDirectory } = useReports();
+  const { reports, stats, refreshReports } = useReports();
   const { t } = useLanguage();
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All Categories");
   const [selectedStatus, setSelectedStatus] = useState("All Statuses");
   const [selectedPriority, setSelectedPriority] = useState("All Priorities");
   const [selectedDepartment, setSelectedDepartment] = useState("All Departments");
-  const [staffCount, setStaffCount] = useState(0);
+  const [selectedDate, setSelectedDate] = useState("");
   const [loadError, setLoadError] = useState("");
+  const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
+  const [selectedMunicipalityId, setSelectedMunicipalityId] = useState("");
+  const [verifiedMunicipalityId, setVerifiedMunicipalityId] = useState("");
+  const [accessCode, setAccessCode] = useState("");
+  const [accessError, setAccessError] = useState("");
+  const [accessMessage, setAccessMessage] = useState("");
+  const [isMunicipalityLoading, setIsMunicipalityLoading] = useState(true);
+  const [isVerifying, setIsVerifying] = useState(false);
 
   useEffect(() => {
     if (!isAuthReady || adminUser) return;
@@ -38,16 +52,82 @@ export default function AdminDashboardPage() {
   }, [adminUser, isAuthReady, residentUser, router]);
 
   useEffect(() => {
-    if (!adminUser) return;
-    void Promise.all([refreshReports(true), fetchStaffDirectory()])
-      .then(([, staff]) => {
-        setStaffCount(staff.length);
-        setLoadError("");
+    if (isAuthReady && adminUser?.role === "super_admin") router.replace("/admin/municipalities");
+  }, [adminUser, isAuthReady, router]);
+
+  useEffect(() => {
+    if (!adminUser || adminUser.role === "super_admin") return;
+    let active = true;
+    void fetchStaffMunicipalities()
+      .then(({ municipalities: assigned, verifiedMunicipalityId: verified }) => {
+        if (!active) return;
+        setMunicipalities(assigned);
+        setSelectedMunicipalityId(verified || assigned[0]?.id || "");
+        setVerifiedMunicipalityId(verified || "");
+        setAccessError("");
       })
       .catch((error: unknown) => {
-        setLoadError(error instanceof Error ? error.message : "Unable to load operations data.");
+        if (active) setAccessError(error instanceof Error ? error.message : "Unable to load assigned municipalities.");
+      })
+      .finally(() => {
+        if (active) setIsMunicipalityLoading(false);
       });
-  }, [adminUser, fetchStaffDirectory, refreshReports]);
+    return () => { active = false; };
+  }, [adminUser]);
+
+  useEffect(() => {
+    if (!adminUser || adminUser.role === "super_admin" || !verifiedMunicipalityId) return;
+    void refreshReports(true)
+      .then(() => setLoadError(""))
+      .catch((error: unknown) => {
+        setVerifiedMunicipalityId("");
+        setAccessError(error instanceof Error ? error.message : "Municipality access expired. Verify access again.");
+      });
+  }, [adminUser, refreshReports, verifiedMunicipalityId]);
+
+  const handleMunicipalityChange = async (municipalityId: string) => {
+    setAccessError("");
+    setAccessMessage("");
+    if (verifiedMunicipalityId) {
+      try {
+        await lockStaffMunicipality();
+      } catch (error) {
+        setAccessError(error instanceof Error ? error.message : "Unable to lock the current municipality.");
+        return;
+      }
+    }
+    setVerifiedMunicipalityId("");
+    setAccessCode("");
+    setSelectedMunicipalityId(municipalityId);
+  };
+
+  const handleVerifyAccess = async () => {
+    if (!selectedMunicipalityId || !accessCode) return;
+    setIsVerifying(true);
+    setAccessError("");
+    setAccessMessage("");
+    try {
+      const result = await verifyStaffMunicipality(selectedMunicipalityId, accessCode);
+      setVerifiedMunicipalityId(selectedMunicipalityId);
+      setAccessCode("");
+      setAccessMessage(result.message);
+    } catch (error) {
+      setAccessError(error instanceof Error ? error.message : "Unable to verify municipality access.");
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleLockMunicipality = async () => {
+    try {
+      await lockStaffMunicipality();
+      setVerifiedMunicipalityId("");
+      setAccessMessage("");
+      setAccessCode("");
+    } catch (error) {
+      setAccessError(error instanceof Error ? error.message : "Unable to lock the municipality workspace.");
+    }
+  };
 
   const filteredReports = useMemo(() => {
     return reports.filter((issue) => {
@@ -55,6 +135,8 @@ export default function AdminDashboardPage() {
         issue.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
         issue.category.toLowerCase().includes(searchTerm.toLowerCase()) ||
         issue.location.city?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        issue.location.address?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        issue.location.municipality?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         false;
 
       const matchesCategory =
@@ -65,10 +147,11 @@ export default function AdminDashboardPage() {
 
       const matchesPriority = selectedPriority === "All Priorities" || issue.priority === selectedPriority;
       const matchesDepartment = selectedDepartment === "All Departments" || issue.department === selectedDepartment;
+      const matchesDate = !selectedDate || new Date(issue.reportedAt).toISOString().slice(0, 10) === selectedDate;
 
-      return matchesSearch && matchesCategory && matchesStatus && matchesPriority && matchesDepartment;
+      return matchesSearch && matchesCategory && matchesStatus && matchesPriority && matchesDepartment && matchesDate;
     });
-  }, [reports, searchTerm, selectedCategory, selectedDepartment, selectedPriority, selectedStatus]);
+  }, [reports, searchTerm, selectedCategory, selectedDepartment, selectedPriority, selectedStatus, selectedDate]);
 
   const departmentOptions = Array.from(new Set(reports.map((issue) => issue.department).filter(Boolean))) as string[];
 
@@ -76,6 +159,50 @@ export default function AdminDashboardPage() {
     return (
       <main className="flex min-h-[60vh] items-center justify-center bg-slate-950 px-4 text-white" aria-busy="true">
         <p role="status" className="text-sm font-medium text-slate-300">Checking staff access...</p>
+      </main>
+    );
+  }
+
+  if (adminUser.role === "super_admin") return null;
+
+  const selectedMunicipality = municipalities.find((municipality) => municipality.id === selectedMunicipalityId);
+
+  if (!verifiedMunicipalityId) {
+    return (
+      <main className="min-h-screen bg-slate-950 px-4 py-10 text-white sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-3xl">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-400">Staff workspace</p>
+          <h1 className="mt-2 text-3xl font-bold">Municipality access</h1>
+          <p className="mt-2 text-sm text-slate-300">Signed in as {adminUser.name}</p>
+          {isMunicipalityLoading ? (
+            <p role="status" className="mt-8 text-sm text-slate-300">Loading assigned municipalities...</p>
+          ) : municipalities.length === 0 ? (
+            <p className="mt-8 rounded-xl border border-slate-700 bg-slate-900 p-5 text-sm text-slate-200">
+              You are not authorized to manage issues for any municipality. Please contact your administrator.
+            </p>
+          ) : (
+            <section className="mt-8 space-y-5 rounded-xl border border-slate-700 bg-slate-900 p-6">
+              <div>
+                <label htmlFor="municipality" className="mb-2 block text-sm font-medium text-slate-200">Your municipalities</label>
+                <select id="municipality" value={selectedMunicipalityId} onChange={(event) => void handleMunicipalityChange(event.target.value)} className="w-full rounded-lg border border-slate-600 bg-slate-800 px-4 py-3 text-white">
+                  {municipalities.map((municipality) => <option key={municipality.id} value={municipality.id}>{municipality.name} · {municipality.province}</option>)}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="municipality-access-code" className="mb-2 block text-sm font-medium text-slate-200">
+                  Access code for {selectedMunicipality?.name}
+                </label>
+                <input id="municipality-access-code" type="password" autoComplete="one-time-code" value={accessCode} onChange={(event) => setAccessCode(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void handleVerifyAccess(); }} className="w-full rounded-lg border border-slate-600 bg-slate-800 px-4 py-3 text-white" />
+              </div>
+              {accessError && <p role="alert" className="text-sm text-rose-300">{accessError}</p>}
+              {accessMessage && <p role="status" className="text-sm text-emerald-300">{accessMessage}</p>}
+              <button type="button" disabled={!accessCode || isVerifying} onClick={() => void handleVerifyAccess()} className="rounded-lg bg-cyan-600 px-4 py-3 font-semibold text-white disabled:opacity-50">
+                {isVerifying ? "Verifying..." : "Verify access"}
+              </button>
+            </section>
+          )}
+          {accessError && municipalities.length === 0 && <p role="alert" className="mt-5 text-sm text-rose-300">{accessError}</p>}
+        </div>
       </main>
     );
   }
@@ -91,7 +218,7 @@ export default function AdminDashboardPage() {
               <p className="mt-2 text-sm text-slate-300">Operations mode active for {adminUser.name}. Focused on service delivery and triage.</p>
             )}
           </div>
-          <p className="text-sm text-slate-400">{staffCount} registered staff member{staffCount === 1 ? "" : "s"}</p>
+          <button type="button" onClick={() => void handleLockMunicipality()} className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-900">Lock municipality</button>
         </div>
 
         {loadError && <p role="alert" className="mb-6 rounded-xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">{loadError}</p>}
@@ -125,7 +252,7 @@ export default function AdminDashboardPage() {
         </section>
 
         <div className="mb-8 rounded-2xl border border-slate-800 bg-slate-900 p-5">
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
             <div>
               <label htmlFor="search" className="mb-2 block text-sm font-medium text-slate-300">
                 {t("searchReports")}
@@ -191,6 +318,11 @@ export default function AdminDashboardPage() {
                 <option>All Departments</option>
                 {departmentOptions.map((department) => <option key={department}>{department}</option>)}
               </select>
+            </div>
+
+            <div>
+              <label htmlFor="report-date" className="mb-2 block text-sm font-medium text-slate-300">Date</label>
+              <input id="report-date" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} className="w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-white focus:border-cyan-500 focus:outline-none" />
             </div>
           </div>
         </div>

@@ -22,12 +22,26 @@ const {
   getResidentByEmail,
   createResidentInDb,
   getStaffByEmail,
+  getStaffById,
   getStaffByIdFromDb,
   createStaffInDb,
   getStaffDirectoryFromDb,
+  countSuperAdmins,
+  upsertMunicipality,
+  getMunicipalityById,
+  listMunicipalities,
+  getStaffMunicipalities,
+  staffHasMunicipality,
+  assignStaffMunicipality,
+  removeStaffMunicipality,
+  setStaffActive,
+  setMunicipalityActive,
+  setMunicipalityAccessCode,
+  createAuditLog,
   DEFAULT_CATEGORIES,
   pool,
 } = require('./db');
+const { listOfficialMunicipalities, resolveLocation } = require('./location');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -54,6 +68,9 @@ const DEFAULT_STORE = {
   reports: [],
   users: [],
   admins: [],
+  municipalities: [],
+  staffMunicipalities: [],
+  auditLogs: [],
 };
 
 function ensureDataStore() {
@@ -77,6 +94,9 @@ function readStore() {
       reports: Array.isArray(parsed.reports) ? parsed.reports : [],
       users: Array.isArray(parsed.users) ? parsed.users : [],
       admins: Array.isArray(parsed.admins) ? parsed.admins : [],
+      municipalities: Array.isArray(parsed.municipalities) ? parsed.municipalities : [],
+      staffMunicipalities: Array.isArray(parsed.staffMunicipalities) ? parsed.staffMunicipalities : [],
+      auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
     };
   } catch (error) {
     console.error('Unable to read store, resetting to empty state.', error);
@@ -136,18 +156,134 @@ function verifyRequestToken(req) {
 }
 
 function requireRole(role) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     const claims = verifyRequestToken(req);
     if (!claims?.id) return res.status(401).json({ message: 'Authentication is required' });
-    if (claims.role !== role) return res.status(403).json({ message: 'Access is not permitted' });
-    req.auth = { id: claims.id, email: claims.email, name: claims.name, role: claims.role };
-    if (role === 'admin') req.staff = req.auth;
+
+    try {
+      let account;
+      let actualRole;
+      if (claims.role === 'resident') {
+        account = pool
+          ? await getResidentByEmail(claims.email)
+          : readStore().users.find((user) => user.id === claims.id);
+        actualRole = 'resident';
+      } else if (['admin', 'staff', 'super_admin'].includes(claims.role)) {
+        account = pool
+          ? await getStaffById(claims.id)
+          : readStore().admins.find((admin) => admin.id === claims.id);
+        actualRole = account?.role === 'super_admin' ? 'super_admin' : 'staff';
+      }
+
+      if (!account || account.id !== claims.id) {
+        return res.status(401).json({ message: 'Authentication is required' });
+      }
+      if (account.isActive === false || account.active === false) {
+        clearSessionCookie(res);
+        return res.status(401).json({ message: 'This account is inactive.' });
+      }
+      if (role === 'resident' && actualRole !== 'resident') {
+        return res.status(403).json({ message: 'Access is not permitted' });
+      }
+      if (role === 'staff' && !['staff', 'super_admin'].includes(actualRole)) {
+        return res.status(403).json({ message: 'Access is not permitted' });
+      }
+      if (role === 'super_admin' && actualRole !== 'super_admin') {
+        return res.status(403).json({ message: 'Access is not permitted' });
+      }
+
+      req.sessionClaims = claims;
+      req.auth = { id: account.id, email: account.email, name: account.name, role: actualRole };
+      if (actualRole !== 'resident') req.staff = req.auth;
+    } catch (error) {
+      console.error('Account authorization lookup failed:', error);
+      return res.status(503).json({ message: 'Unable to verify account access right now' });
+    }
     return next();
   };
 }
 
-const requireAdmin = requireRole('admin');
+const requireStaff = requireRole('staff');
+const requireAdmin = requireStaff;
+const requireSuperAdmin = requireRole('super_admin');
 const requireResident = requireRole('resident');
+
+async function getMunicipalityRecord(municipalityId) {
+  if (pool) return getMunicipalityById(municipalityId);
+  return readStore().municipalities.find((municipality) => municipality.id === municipalityId) || null;
+}
+
+async function saveMunicipalityRecord(municipality) {
+  if (pool) return upsertMunicipality(municipality);
+  const store = readStore();
+  let record = store.municipalities.find((entry) => entry.code === municipality.code);
+  if (record) {
+    Object.assign(record, {
+      name: municipality.name,
+      province: municipality.province,
+      type: municipality.type,
+      boundarySource: municipality.boundarySource,
+      boundaryDataset: municipality.boundaryDataset,
+      updatedAt: new Date().toISOString(),
+    });
+  } else {
+    record = {
+      ...municipality,
+      id: municipality.code,
+      active: true,
+      accessCodeHash: null,
+      accessCodeVersion: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    store.municipalities.push(record);
+  }
+  writeStore(store);
+  return record;
+}
+
+async function staffAssignedTo(staffId, municipalityId) {
+  if (pool) return staffHasMunicipality(staffId, municipalityId);
+  return readStore().staffMunicipalities.some((assignment) =>
+    assignment.staffId === staffId && assignment.municipalityId === municipalityId,
+  );
+}
+
+async function hasVerifiedMunicipalityAccess(req, municipalityId) {
+  if (req.auth.role === 'super_admin') return true;
+  const claims = req.sessionClaims || {};
+  if (!municipalityId || claims.municipalityId !== municipalityId) return false;
+  if (!await staffAssignedTo(req.auth.id, municipalityId)) return false;
+  const municipality = await getMunicipalityRecord(municipalityId);
+  return Boolean(municipality?.active && municipality.accessCodeHash &&
+    Number(municipality.accessCodeVersion) === Number(claims.accessCodeVersion));
+}
+
+async function requireActiveMunicipality(req, res) {
+  if (req.auth.role === 'super_admin') return null;
+  const municipalityId = req.sessionClaims?.municipalityId;
+  if (!await hasVerifiedMunicipalityAccess(req, municipalityId)) {
+    res.status(403).json({ message: 'Municipality access is missing or expired. Verify access again.' });
+    return undefined;
+  }
+  return municipalityId;
+}
+
+async function findAuthorizedReport(req, reportId, res) {
+  const report = await findReport(reportId);
+  if (!report) {
+    res.status(404).json({ message: 'Report not found' });
+    return null;
+  }
+  if (req.auth.role !== 'super_admin') {
+    const municipalityId = report.municipalityId || report.location?.municipalityId;
+    if (!await hasVerifiedMunicipalityAccess(req, municipalityId)) {
+      res.status(403).json({ message: 'Access is not permitted for this report' });
+      return null;
+    }
+  }
+  return report;
+}
 
 function setSessionCookie(res, claims) {
   const token = createToken(claims);
@@ -200,10 +336,6 @@ function validateIssuePayload(payload) {
     return 'Choose a valid location in South Africa';
   }
 
-  if (!String(payload.location.city || '').trim() || !String(payload.location.municipality || '').trim()) {
-    return 'City and municipality are required';
-  }
-
   if (payload.priority && !VALID_PRIORITIES.includes(payload.priority)) {
     return 'Choose a valid priority';
   }
@@ -228,9 +360,9 @@ async function findReport(reportId) {
   return readStore().reports.find((report) => report.id === reportId) || null;
 }
 
-async function saveReportOperations(reportId, operations) {
+async function saveReportOperations(reportId, operations, req) {
   if (pool) {
-    return updateReportOperationsInDb(reportId, operations);
+    return updateReportOperationsInDb(reportId, operations, databaseAuthorizationScope(req));
   }
   const store = readStore();
   const report = store.reports.find((entry) => entry.id === reportId);
@@ -238,6 +370,15 @@ async function saveReportOperations(reportId, operations) {
   Object.assign(report, operations);
   writeStore(store);
   return report;
+}
+
+function databaseAuthorizationScope(req) {
+  if (req.auth.role !== 'staff') return undefined;
+  return {
+    staffId: req.auth.id,
+    municipalityId: req.sessionClaims.municipalityId,
+    accessCodeVersion: req.sessionClaims.accessCodeVersion,
+  };
 }
 
 function publicReport(report) {
@@ -262,6 +403,13 @@ function publicReport(report) {
     });
   }
   return visibleReport;
+}
+
+function publicMunicipality(municipality) {
+  if (!municipality) return municipality;
+  const accessCodeConfigured = Boolean(municipality.accessCodeHash || municipality.access_code_hash);
+  const { accessCodeHash, accessCodeVersion, access_code_hash, boundaryData, boundary_data, ...visible } = municipality;
+  return { ...visible, accessCodeConfigured };
 }
 
 function staffReportSummary(report) {
@@ -307,11 +455,26 @@ const reportRateLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: 'Report limit reached. Please try again later.' },
 });
+const locationRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 30,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { message: 'Location lookups are temporarily limited. Please try again shortly.' },
+});
+const accessCodeRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 8,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { message: 'Too many access-code attempts. Please try again later.' },
+});
 app.use([
   '/api/auth/register',
   '/api/auth/login',
   '/api/admin/register',
   '/api/admin/login',
+  '/api/admin/bootstrap',
 ], authRateLimiter);
 
 app.use((req, res, next) => {
@@ -324,6 +487,49 @@ app.use((req, res, next) => {
 });
 
 module.exports = { app, readStore, writeStore, makeId, createToken, requireAdmin };
+
+app.locals.locationResolver = resolveLocation;
+app.locals.municipalityLister = listOfficialMunicipalities;
+
+async function writeAudit(entry) {
+  if (pool) return createAuditLog(entry);
+  const store = readStore();
+  store.auditLogs.push({ id: makeId('AUDIT'), ...entry, createdAt: new Date().toISOString() });
+  writeStore(store);
+  return null;
+}
+
+async function createBootstrapSuperAdmin(account) {
+  if (pool) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN;');
+      await client.query('SELECT pg_advisory_xact_lock(19791105);');
+      const existing = await client.query("SELECT 1 FROM staff_users WHERE role = 'super_admin' LIMIT 1;");
+      if (existing.rowCount) {
+        await client.query('ROLLBACK;');
+        return false;
+      }
+      await client.query(
+        `INSERT INTO staff_users (id, name, email, password_hash, role)
+         VALUES ($1, $2, $3, $4, 'super_admin');`,
+        [account.id, account.name, account.email, account.password],
+      );
+      await client.query('COMMIT;');
+      return true;
+    } catch (error) {
+      await client.query('ROLLBACK;');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  const store = readStore();
+  if (store.admins.some((admin) => admin.role === 'super_admin')) return false;
+  store.admins.push(account);
+  writeStore(store);
+  return true;
+}
 
 app.get('/', (req, res) => {
   res.status(200).json({
@@ -348,7 +554,7 @@ app.get('/api/health', async (req, res) => {
 
 app.get('/api/auth/session', async (req, res) => {
   const claims = verifyRequestToken(req);
-  if (!claims?.id || !['resident', 'admin'].includes(claims.role)) {
+  if (!claims?.id || !['resident', 'admin', 'staff', 'super_admin'].includes(claims.role)) {
     return res.status(200).json({ user: null });
   }
 
@@ -360,17 +566,18 @@ app.get('/api/auth/session', async (req, res) => {
         : readStore().users.find((user) => user.id === claims.id);
     } else {
       account = pool
-        ? await getStaffByEmail(claims.email)
+        ? await getStaffById(claims.id)
         : readStore().admins.find((admin) => admin.id === claims.id);
     }
 
-    if (!account || account.id !== claims.id) {
+    if (!account || account.id !== claims.id || account.isActive === false || account.active === false) {
       clearSessionCookie(res);
       return res.status(200).json({ user: null });
     }
 
+    const role = claims.role === 'resident' ? 'resident' : account.role === 'super_admin' ? 'super_admin' : 'staff';
     return res.status(200).json({
-      user: { id: account.id, name: account.name, email: account.email, role: claims.role },
+      user: { id: account.id, name: account.name, email: account.email, role },
     });
   } catch (error) {
     console.error('Session lookup failed:', error);
@@ -381,6 +588,320 @@ app.get('/api/auth/session', async (req, res) => {
 app.post('/api/auth/logout', (req, res) => {
   clearSessionCookie(res);
   return res.status(200).json({ message: 'Signed out' });
+});
+
+app.post('/api/location/resolve', requireResident, locationRateLimiter, async (req, res) => {
+  const { latitude, longitude } = req.body || {};
+  if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+    return res.status(400).json({ message: 'Choose a map location to continue.' });
+  }
+  try {
+    const location = await app.locals.locationResolver(latitude, longitude);
+    if (!location) {
+      return res.status(422).json({ message: "We couldn't determine the municipality for this location. Please move the pin and try again." });
+    }
+    await saveMunicipalityRecord({
+      id: location.municipalityId,
+      code: location.municipalityId,
+      name: location.municipality,
+      province: location.province,
+      type: location.municipalityType,
+      boundarySource: location.boundarySource,
+      boundaryDataset: location.boundaryDataset,
+    });
+    return res.status(200).json({ location });
+  } catch (error) {
+    console.error('Location resolution failed:', error.message);
+    return res.status(503).json({ message: 'Location services are temporarily unavailable. Please try again.' });
+  }
+});
+
+app.get('/api/staff/municipalities', requireStaff, async (req, res) => {
+  try {
+    if (req.auth.role === 'super_admin') {
+      const municipalities = pool
+        ? await listMunicipalities()
+        : readStore().municipalities.filter((municipality) => municipality.active !== false);
+      return res.status(200).json({ municipalities: municipalities.map(publicMunicipality) });
+    }
+    const municipalities = pool
+      ? await getStaffMunicipalities(req.auth.id)
+      : (() => {
+        const store = readStore();
+        const municipalityIds = new Set(store.staffMunicipalities
+          .filter((assignment) => assignment.staffId === req.auth.id)
+          .map((assignment) => assignment.municipalityId));
+        return store.municipalities.filter((municipality) =>
+          municipalityIds.has(municipality.id) && municipality.active !== false,
+        );
+      })();
+    const verifiedMunicipalityId = req.sessionClaims?.municipalityId &&
+      await hasVerifiedMunicipalityAccess(req, req.sessionClaims.municipalityId)
+      ? req.sessionClaims.municipalityId
+      : undefined;
+    return res.status(200).json({ municipalities: municipalities.map(publicMunicipality), verifiedMunicipalityId });
+  } catch (error) {
+    console.error('Staff municipality list failed:', error.message);
+    return res.status(503).json({ message: 'Unable to load assigned municipalities right now.' });
+  }
+});
+
+app.post('/api/staff/municipalities/:id/verify-access', requireStaff, accessCodeRateLimiter, async (req, res) => {
+  if (req.auth.role !== 'staff') return res.status(403).json({ message: 'Use the super-admin workspace for municipality management.' });
+  const municipalityId = String(req.params.id);
+  try {
+    if (!await staffAssignedTo(req.auth.id, municipalityId)) {
+      return res.status(403).json({ message: 'You are not authorized to manage issues for this municipality.' });
+    }
+    const municipality = await getMunicipalityRecord(municipalityId);
+    if (!municipality?.active || !municipality.accessCodeHash) {
+      return res.status(403).json({ message: 'Municipality access is not configured. Contact your administrator.' });
+    }
+    if (typeof municipality.accessCodeHash !== 'string' || !municipality.accessCodeHash.startsWith('scrypt:') ||
+      typeof req.body?.accessCode !== 'string' || !verifyPassword(req.body.accessCode, municipality.accessCodeHash)) {
+      return res.status(401).json({ message: 'The access code is incorrect. Please try again.' });
+    }
+    setSessionCookie(res, {
+      ...req.auth,
+      role: 'staff',
+      municipalityId,
+      accessCodeVersion: municipality.accessCodeVersion,
+    });
+    await writeAudit({
+      userId: req.auth.id,
+      municipalityId,
+      action: 'municipality_access_verified',
+    });
+    return res.status(200).json({
+      message: `Access verified for ${municipality.name}.`,
+      municipality: publicMunicipality(municipality),
+    });
+  } catch (error) {
+    console.error('Municipality access verification failed:', error.message);
+    return res.status(503).json({ message: 'Unable to verify municipality access right now.' });
+  }
+});
+
+app.post('/api/staff/municipality/lock', requireStaff, (req, res) => {
+  setSessionCookie(res, {
+    id: req.auth.id,
+    name: req.auth.name,
+    email: req.auth.email,
+    role: req.auth.role === 'super_admin' ? 'super_admin' : 'staff',
+  });
+  return res.status(200).json({ message: 'Municipality workspace locked.' });
+});
+
+app.post('/api/admin/bootstrap', async (req, res) => {
+  const configuredToken = process.env.SUPER_ADMIN_BOOTSTRAP_TOKEN;
+  if (!configuredToken) return res.status(503).json({ message: 'Super-admin bootstrap is not configured.' });
+  const providedToken = Buffer.from(String(req.body?.bootstrapToken || ''));
+  const expectedToken = Buffer.from(configuredToken);
+  if (providedToken.length !== expectedToken.length || !crypto.timingSafeEqual(providedToken, expectedToken)) {
+    return res.status(403).json({ message: 'A valid bootstrap token is required.' });
+  }
+  const name = String(req.body?.name || '').trim();
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const password = req.body?.password;
+  if (name.length < 2 || name.length > 120 || !/^\S+@\S+\.\S+$/.test(email) ||
+      typeof password !== 'string' || password.length < 12 || password.length > 128) {
+    return res.status(400).json({ message: 'Enter a valid name, email, and password of at least 12 characters.' });
+  }
+  const account = {
+    id: makeId('ADM'),
+    name,
+    email,
+    password: hashPassword(password),
+    role: 'super_admin',
+    createdAt: new Date().toISOString(),
+  };
+  try {
+    const created = await createBootstrapSuperAdmin(account);
+    if (!created) return res.status(409).json({ message: 'Super-admin bootstrap has already been completed.' });
+    setSessionCookie(res, { id: account.id, name, email, role: 'super_admin' });
+    return res.status(201).json({
+      message: 'Super-admin account created successfully.',
+      user: { id: account.id, name, email, role: 'super_admin' },
+    });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ message: 'An account already exists for this email.' });
+    console.error('Super-admin bootstrap failed:', error.message);
+    return res.status(500).json({ message: 'Super-admin bootstrap failed.' });
+  }
+});
+
+app.get('/api/admin/municipalities', requireSuperAdmin, async (req, res) => {
+  try {
+    const sourceMunicipalities = await app.locals.municipalityLister();
+    for (const municipality of sourceMunicipalities) await saveMunicipalityRecord(municipality);
+    const municipalities = pool
+      ? await listMunicipalities()
+      : readStore().municipalities;
+    return res.status(200).json({ municipalities: municipalities.map(publicMunicipality) });
+  } catch (error) {
+    console.error('Official municipality directory failed:', error.message);
+    return res.status(503).json({ message: 'The official municipality directory is temporarily unavailable.' });
+  }
+});
+
+app.get('/api/admin/staff', requireSuperAdmin, async (req, res) => {
+  try {
+    const staff = pool
+      ? await getStaffDirectoryFromDb()
+      : readStore().admins.map(({ id, name, email, role, active }) => ({
+        id, name, email, role: role || 'staff', active: active !== false,
+      }));
+    const staffWithMunicipalities = await Promise.all(staff.map(async (member) => {
+      const municipalities = pool
+        ? await getStaffMunicipalities(member.id)
+        : (() => {
+          const store = readStore();
+          const ids = new Set(store.staffMunicipalities.filter((item) => item.staffId === member.id).map((item) => item.municipalityId));
+          return store.municipalities.filter((item) => ids.has(item.id)).map(publicMunicipality);
+        })();
+      return {
+        id: member.id,
+        name: member.name,
+        email: member.email,
+        role: member.role || 'staff',
+        active: member.isActive !== false && member.active !== false,
+        municipalities: municipalities.map(publicMunicipality),
+      };
+    }));
+    return res.status(200).json({ staff: staffWithMunicipalities });
+  } catch (error) {
+    console.error('Staff directory fetch failed:', error.message);
+    return res.status(503).json({ message: 'Unable to load staff directory.' });
+  }
+});
+
+app.post('/api/admin/staff/:staffId/municipalities/:municipalityId', requireSuperAdmin, async (req, res) => {
+  const { staffId, municipalityId } = req.params;
+  try {
+    const member = pool
+      ? await getStaffById(staffId)
+      : readStore().admins.find((admin) => admin.id === staffId);
+    const municipality = await getMunicipalityRecord(municipalityId);
+    if (!member || member.isActive === false || member.active === false ||
+      (member.role && member.role !== 'staff') || !municipality?.active) {
+      return res.status(404).json({ message: 'Staff member or municipality not found.' });
+    }
+    if (pool) {
+      await assignStaffMunicipality(staffId, municipalityId);
+    } else {
+      const store = readStore();
+      if (!store.staffMunicipalities.some((item) => item.staffId === staffId && item.municipalityId === municipalityId)) {
+        store.staffMunicipalities.push({ staffId, municipalityId, createdAt: new Date().toISOString() });
+        writeStore(store);
+      }
+    }
+    await writeAudit({ userId: req.auth.id, municipalityId, action: 'staff_municipality_assigned', details: { staffId } });
+    return res.status(200).json({ message: 'Staff municipality access assigned.' });
+  } catch (error) {
+    console.error('Staff assignment failed:', error.message);
+    return res.status(503).json({ message: 'Unable to assign staff access right now.' });
+  }
+});
+
+app.delete('/api/admin/staff/:staffId/municipalities/:municipalityId', requireSuperAdmin, async (req, res) => {
+  const { staffId, municipalityId } = req.params;
+  try {
+    const removed = pool
+      ? await removeStaffMunicipality(staffId, municipalityId)
+      : (() => {
+        const store = readStore();
+        const before = store.staffMunicipalities.length;
+        store.staffMunicipalities = store.staffMunicipalities.filter((item) =>
+          item.staffId !== staffId || item.municipalityId !== municipalityId,
+        );
+        if (before !== store.staffMunicipalities.length) writeStore(store);
+        return before !== store.staffMunicipalities.length;
+      })();
+    if (!removed) return res.status(404).json({ message: 'Staff assignment not found.' });
+    await writeAudit({ userId: req.auth.id, municipalityId, action: 'staff_municipality_removed', details: { staffId } });
+    return res.status(200).json({ message: 'Staff municipality access removed.' });
+  } catch (error) {
+    console.error('Staff assignment removal failed:', error.message);
+    return res.status(503).json({ message: 'Unable to remove staff access right now.' });
+  }
+});
+
+app.patch('/api/admin/staff/:staffId/active', requireSuperAdmin, async (req, res) => {
+  const active = req.body?.active;
+  if (typeof active !== 'boolean') return res.status(400).json({ message: 'active must be a boolean.' });
+  try {
+    const updated = pool
+      ? await setStaffActive(req.params.staffId, active)
+      : (() => {
+        const store = readStore();
+        const member = store.admins.find((admin) => admin.id === req.params.staffId && admin.role !== 'super_admin');
+        if (!member) return null;
+        member.active = active;
+        writeStore(store);
+        return { id: member.id, active };
+      })();
+    if (!updated) return res.status(404).json({ message: 'Staff member not found.' });
+    await writeAudit({ userId: req.auth.id, action: active ? 'staff_activated' : 'staff_deactivated', details: { staffId: req.params.staffId } });
+    return res.status(200).json({ message: active ? 'Staff member activated.' : 'Staff member deactivated.' });
+  } catch (error) {
+    console.error('Staff activation update failed:', error.message);
+    return res.status(503).json({ message: 'Unable to update staff status right now.' });
+  }
+});
+
+app.patch('/api/admin/municipalities/:id/active', requireSuperAdmin, async (req, res) => {
+  const active = req.body?.active;
+  if (typeof active !== 'boolean') return res.status(400).json({ message: 'active must be a boolean.' });
+  const municipalityId = String(req.params.id);
+  try {
+    const updated = pool
+      ? await setMunicipalityActive(municipalityId, active)
+      : (() => {
+        const store = readStore();
+        const municipality = store.municipalities.find((item) => item.id === municipalityId);
+        if (!municipality) return null;
+        municipality.active = active;
+        municipality.accessCodeVersion = Number(municipality.accessCodeVersion || 0) + 1;
+        writeStore(store);
+        return municipality;
+      })();
+    if (!updated) return res.status(404).json({ message: 'Municipality not found.' });
+    await writeAudit({ userId: req.auth.id, municipalityId, action: active ? 'municipality_activated' : 'municipality_deactivated' });
+    return res.status(200).json({ message: active ? 'Municipality activated.' : 'Municipality deactivated.' });
+  } catch (error) {
+    console.error('Municipality status update failed:', error.message);
+    return res.status(503).json({ message: 'Unable to update municipality status right now.' });
+  }
+});
+
+app.post('/api/admin/municipalities/:id/generate-access-code', requireSuperAdmin, async (req, res) => {
+  const municipalityId = String(req.params.id);
+  try {
+    const municipality = await getMunicipalityRecord(municipalityId);
+    if (!municipality) return res.status(404).json({ message: 'Municipality not found.' });
+    const accessCode = crypto.randomBytes(18).toString('base64url');
+    const updated = pool
+      ? await setMunicipalityAccessCode(municipalityId, hashPassword(accessCode))
+      : (() => {
+        const store = readStore();
+        const record = store.municipalities.find((item) => item.id === municipalityId);
+        if (!record) return null;
+        record.accessCodeHash = hashPassword(accessCode);
+        record.accessCodeVersion = Number(record.accessCodeVersion || 0) + 1;
+        record.updatedAt = new Date().toISOString();
+        writeStore(store);
+        return record;
+      })();
+    if (!updated) return res.status(404).json({ message: 'Municipality not found.' });
+    await writeAudit({ userId: req.auth.id, municipalityId, action: 'municipality_access_code_reset' });
+    return res.status(200).json({
+      message: 'This access code is shown once. Store it securely and share it only with assigned staff.',
+      accessCode,
+    });
+  } catch (error) {
+    console.error('Municipality access-code generation failed:', error.message);
+    return res.status(503).json({ message: 'Unable to generate an access code right now.' });
+  }
 });
 
 app.get('/api/reports', async (req, res) => {
@@ -441,7 +962,7 @@ app.get('/api/my/reports', requireResident, async (req, res) => {
   if (pool) {
     try {
       const reports = await getReportsFromDb({ residentId: req.auth.id });
-      return res.status(200).json({ reports });
+      return res.status(200).json({ reports: reports.map(publicReport) });
     } catch (error) {
       console.error('Resident report fetch failed:', error);
       return res.status(503).json({ message: 'Unable to load your reports right now' });
@@ -450,12 +971,20 @@ app.get('/api/my/reports', requireResident, async (req, res) => {
 
   const store = readStore();
   const reports = store.reports.filter((report) => report.residentId === req.auth.id);
-  return res.status(200).json({ reports });
+  return res.status(200).json({ reports: reports.map(publicReport) });
 });
 
 app.get('/api/admin/reports', requireAdmin, async (req, res) => {
   try {
-    const reports = pool ? await getReportsFromDb() : readStore().reports;
+    const scopedMunicipalityId = await requireActiveMunicipality(req, res);
+    if (scopedMunicipalityId === undefined) return;
+    const municipalityId = req.auth.role === 'super_admin'
+      ? String(req.query.municipalityId || '') || undefined
+      : scopedMunicipalityId;
+    const reports = pool
+      ? await getReportsFromDb({ municipalityId: municipalityId || undefined })
+      : readStore().reports.filter((report) => !municipalityId ||
+        (report.municipalityId || report.location?.municipalityId) === municipalityId);
     return res.status(200).json({ reports: reports.map(staffReportSummary) });
   } catch (error) {
     console.error('Staff report fetch failed:', error);
@@ -465,26 +994,18 @@ app.get('/api/admin/reports', requireAdmin, async (req, res) => {
 
 app.get('/api/admin/reports/:id', requireAdmin, async (req, res) => {
   try {
-    const report = await findReport(req.params.id);
-    if (!report) return res.status(404).json({ message: 'Report not found' });
-    const reports = pool ? await getReportsFromDb() : readStore().reports;
+    const report = await findAuthorizedReport(req, req.params.id, res);
+    if (!report) return;
+    const municipalityId = report.municipalityId || report.location?.municipalityId;
+    const reports = pool
+      ? await getReportsFromDb(req.auth.role === 'super_admin' ? {} : { municipalityId })
+      : readStore().reports.filter((candidate) =>
+        (req.auth.role === 'super_admin' || (candidate.municipalityId || candidate.location?.municipalityId) === municipalityId));
     const duplicateReports = reports.filter((candidate) => candidate.duplicateOf === report.id).map(({ id, title }) => ({ id, title }));
     return res.status(200).json({ report: { ...report, duplicateReports } });
   } catch (error) {
     console.error('Staff report detail fetch failed:', error);
     return res.status(500).json({ message: 'Failed to fetch staff report detail' });
-  }
-});
-
-app.get('/api/admin/staff', requireAdmin, async (req, res) => {
-  try {
-    const staff = pool
-      ? await getStaffDirectoryFromDb()
-      : readStore().admins.map(({ id, name, email }) => ({ id, name, email }));
-    return res.status(200).json({ staff });
-  } catch (error) {
-    console.error('Staff directory fetch failed:', error);
-    return res.status(503).json({ message: 'Unable to load staff directory' });
   }
 });
 
@@ -552,13 +1073,39 @@ app.post('/api/reports', reportRateLimiter, requireResident, async (req, res) =>
     return res.status(400).json({ message: validationError });
   }
 
+  let resolvedLocation;
+  try {
+    resolvedLocation = await app.locals.locationResolver(
+      Number(req.body.location.latitude),
+      Number(req.body.location.longitude),
+    );
+    if (!resolvedLocation) {
+      return res.status(422).json({ message: "We couldn't determine the municipality for this location. Please move the pin and try again." });
+    }
+  } catch (error) {
+    console.error('Report location resolution failed:', error.message);
+    return res.status(503).json({ message: 'Location services are temporarily unavailable. Please try again.' });
+  }
+
+  const municipality = await saveMunicipalityRecord({
+    id: resolvedLocation.municipalityId,
+    code: resolvedLocation.municipalityId,
+    name: resolvedLocation.municipality,
+    province: resolvedLocation.province,
+    type: resolvedLocation.municipalityType,
+    boundarySource: resolvedLocation.boundarySource,
+    boundaryDataset: resolvedLocation.boundaryDataset,
+  });
+  if (!municipality?.active) return res.status(422).json({ message: 'This municipality is not accepting reports right now.' });
+  resolvedLocation.municipalityId = municipality.id;
+
   if (pool) {
     try {
       const report = await createReportInDb({
         title: req.body.title,
         category: req.body.category,
         description: req.body.description,
-        location: req.body.location,
+        location: resolvedLocation,
         priority: req.body.priority,
         reportedBy: req.auth.name,
         residentId: req.auth.id,
@@ -581,13 +1128,8 @@ app.post('/api/reports', reportRateLimiter, requireResident, async (req, res) =>
     title: req.body.title,
     category: req.body.category,
     description: req.body.description,
-    location: {
-      latitude: Number(req.body.location.latitude),
-      longitude: Number(req.body.location.longitude),
-      address: req.body.location.address || '',
-      city: req.body.location.city || '',
-      municipality: req.body.location.municipality || '',
-    },
+    municipalityId: municipality.id,
+    location: resolvedLocation,
     priority: req.body.priority || 'Medium',
     status: 'Reported',
     reportedBy: req.auth.name,
@@ -615,12 +1157,15 @@ app.patch('/api/reports/:id/status', requireAdmin, async (req, res) => {
     });
   }
 
+  const authorizedReport = await findAuthorizedReport(req, req.params.id, res);
+  if (!authorizedReport) return;
+
   if (pool) {
     try {
-      const report = await updateReportStatusInDb(req.params.id, status);
+      const report = await updateReportStatusInDb(req.params.id, status, databaseAuthorizationScope(req));
 
       if (!report) {
-        return res.status(404).json({ message: 'Report not found' });
+        return res.status(req.auth.role === 'staff' ? 403 : 404).json({ message: 'Report is no longer available to this municipality.' });
       }
 
       return res.status(200).json({
@@ -642,6 +1187,7 @@ app.patch('/api/reports/:id/status', requireAdmin, async (req, res) => {
 
   store.reports[reportIndex].status = status;
   writeStore(store);
+  await writeAudit({ userId: req.auth.id, municipalityId: store.reports[reportIndex].municipalityId, reportId: req.params.id, action: 'report_status_changed', details: { status } });
 
   return res.status(200).json({
     message: 'Report status updated successfully',
@@ -669,8 +1215,9 @@ app.patch('/api/reports/:id/triage', requireAdmin, async (req, res) => {
   }
 
   try {
-    const current = await findReport(req.params.id);
-    if (!current) return res.status(404).json({ message: 'Report not found' });
+    const current = await findAuthorizedReport(req, req.params.id, res);
+    if (!current) return;
+    const municipalityId = current.municipalityId || current.location?.municipalityId;
 
     const updates = {};
     for (const field of ['status', 'priority', 'department', 'maintenanceTeam']) {
@@ -690,7 +1237,9 @@ app.patch('/api/reports/:id/triage', requireAdmin, async (req, res) => {
         const assignee = pool
           ? await getStaffByIdFromDb(payload.assignedStaffId)
           : readStore().admins.find((entry) => entry.id === payload.assignedStaffId);
-        if (!assignee) return res.status(400).json({ message: 'Assigned staff member was not found' });
+        if (!assignee || assignee.role === 'super_admin' || !await staffAssignedTo(assignee.id, municipalityId)) {
+          return res.status(400).json({ message: 'Choose a staff member assigned to this municipality.' });
+        }
         updates.assignedStaffId = assignee.id;
         updates.assignedStaffName = assignee.name;
       }
@@ -702,12 +1251,17 @@ app.patch('/api/reports/:id/triage', requireAdmin, async (req, res) => {
         if (payload.duplicateOf === req.params.id) return res.status(400).json({ message: 'A report cannot duplicate itself' });
         const duplicateTarget = await findReport(payload.duplicateOf);
         if (!duplicateTarget) return res.status(400).json({ message: 'Duplicate target was not found' });
+        if ((duplicateTarget.municipalityId || duplicateTarget.location?.municipalityId) !== municipalityId) {
+          return res.status(400).json({ message: 'Duplicate reports must belong to the same municipality.' });
+        }
         updates.duplicateOf = duplicateTarget.id;
       }
     }
 
     const merged = { ...current, ...updates };
-    const report = await saveReportOperations(req.params.id, merged);
+    const report = await saveReportOperations(req.params.id, merged, req);
+    if (!report) return res.status(403).json({ message: 'Municipality access is no longer authorized.' });
+    await writeAudit({ userId: req.auth.id, municipalityId, reportId: req.params.id, action: 'report_triage_updated', details: { fields: Object.keys(updates) } });
     return res.status(200).json({ message: 'Report triage updated', report: staffReportSummary(report) });
   } catch (error) {
     console.error('Report triage update failed:', error);
@@ -719,12 +1273,12 @@ app.post('/api/reports/:id/notes', requireAdmin, async (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
   if (!text || text.length > 4000) return res.status(400).json({ message: 'Note must contain 1 to 4000 characters' });
   try {
-    const report = await findReport(req.params.id);
-    if (!report) return res.status(404).json({ message: 'Report not found' });
-    const admins = readStore().admins;
-    const author = admins.find((entry) => entry.id === req.staff.id);
-    const note = { id: makeId('NOTE'), authorId: req.staff.id, authorName: author?.name || 'Municipal Staff', text, createdAt: new Date().toISOString() };
-    const updated = await saveReportOperations(req.params.id, { ...report, staffNotes: [...(report.staffNotes || []), note] });
+    const report = await findAuthorizedReport(req, req.params.id, res);
+    if (!report) return;
+    const note = { id: makeId('NOTE'), authorId: req.staff.id, authorName: req.staff.name || 'Municipal Staff', text, createdAt: new Date().toISOString() };
+    const updated = await saveReportOperations(req.params.id, { ...report, staffNotes: [...(report.staffNotes || []), note] }, req);
+    if (!updated) return res.status(403).json({ message: 'Municipality access is no longer authorized.' });
+    await writeAudit({ userId: req.auth.id, municipalityId: report.municipalityId, reportId: req.params.id, action: 'staff_note_added' });
     return res.status(201).json({ note, report: updated });
   } catch (error) {
     console.error('Staff note creation failed:', error);
@@ -739,11 +1293,12 @@ app.post('/api/reports/:id/updates', requireAdmin, async (req, res) => {
     return res.status(400).json({ message: 'A valid status and update text of 1 to 4000 characters are required' });
   }
   try {
-    const report = await findReport(req.params.id);
-    if (!report) return res.status(404).json({ message: 'Report not found' });
-    const author = readStore().admins.find((entry) => entry.id === req.staff.id);
-    const update = { id: makeId('UPDATE'), authorId: req.staff.id, authorName: author?.name || 'Municipal Staff', text, status, createdAt: new Date().toISOString() };
-    const updated = await saveReportOperations(req.params.id, { ...report, status, residentUpdates: [...(report.residentUpdates || []), update] });
+    const report = await findAuthorizedReport(req, req.params.id, res);
+    if (!report) return;
+    const update = { id: makeId('UPDATE'), authorId: req.staff.id, authorName: req.staff.name || 'Municipal Staff', text, status, createdAt: new Date().toISOString() };
+    const updated = await saveReportOperations(req.params.id, { ...report, status, residentUpdates: [...(report.residentUpdates || []), update] }, req);
+    if (!updated) return res.status(403).json({ message: 'Municipality access is no longer authorized.' });
+    await writeAudit({ userId: req.auth.id, municipalityId: report.municipalityId, reportId: req.params.id, action: 'resident_update_published', details: { status } });
     return res.status(201).json({ update, report: publicReport(updated) });
   } catch (error) {
     console.error('Resident status update creation failed:', error);
@@ -751,7 +1306,7 @@ app.post('/api/reports/:id/updates', requireAdmin, async (req, res) => {
   }
 });
 
-app.delete('/api/reports', requireAdmin, async (req, res) => {
+app.delete('/api/reports', requireSuperAdmin, async (req, res) => {
   if (pool) {
     try {
       const removedCount = await deleteAllReportsInDb();
@@ -776,7 +1331,7 @@ app.delete('/api/reports', requireAdmin, async (req, res) => {
   });
 });
 
-app.delete('/api/reports/:id', requireAdmin, async (req, res) => {
+app.delete('/api/reports/:id', requireSuperAdmin, async (req, res) => {
   if (pool) {
     try {
       const deleted = await deleteReportInDb(req.params.id);
@@ -931,6 +1486,7 @@ app.post('/api/admin/register', async (req, res) => {
     name: normalizedName,
     email: normalizedEmail,
     password: hashPassword(password),
+    role: 'staff',
     createdAt: new Date().toISOString(),
   };
 
@@ -946,10 +1502,10 @@ app.post('/api/admin/register', async (req, res) => {
       writeStore(store);
     }
 
-    setSessionCookie(res, { id: admin.id, name: admin.name, email: admin.email, role: 'admin' });
+    setSessionCookie(res, { id: admin.id, name: admin.name, email: admin.email, role: 'staff' });
     return res.status(201).json({
       message: 'Admin registered successfully',
-      admin: { id: admin.id, name: admin.name, email: admin.email, role: 'admin' },
+      admin: { id: admin.id, name: admin.name, email: admin.email, role: 'staff' },
     });
   } catch (error) {
     if (error.code === '23505') return res.status(409).json({ message: 'Admin already exists' });
@@ -976,7 +1532,7 @@ app.post('/api/admin/login', async (req, res) => {
     return res.status(503).json({ message: 'Staff sign-in is temporarily unavailable' });
   }
 
-  if (!admin || !verifyPassword(password, admin.password)) {
+  if (!admin || admin.isActive === false || admin.active === false || !verifyPassword(password, admin.password)) {
     return res.status(401).json({ message: 'Invalid email or password' });
   }
 
@@ -991,11 +1547,12 @@ app.post('/api/admin/login', async (req, res) => {
     }
   }
 
-  setSessionCookie(res, { id: admin.id, name: admin.name, email: admin.email, role: 'admin' });
+  const role = admin.role === 'super_admin' ? 'super_admin' : 'staff';
+  setSessionCookie(res, { id: admin.id, name: admin.name, email: admin.email, role });
 
   return res.status(200).json({
     message: 'Admin login successful',
-    admin: { id: admin.id, name: admin.name, email: admin.email, role: 'admin' },
+    admin: { id: admin.id, name: admin.name, email: admin.email, role },
   });
 });
 
@@ -1017,10 +1574,12 @@ if (require.main === module) {
         console.log(`Store path: ${STORE_PATH}`);
       });
     })
-    .catch((error) => {
+    .catch(async (error) => {
       console.error('Database initialization failed:', error);
-      if (process.env.NODE_ENV === 'production') {
-        process.exit(1);
+      if (pool) {
+        await pool.end();
+        process.exitCode = 1;
+        return;
       }
       app.listen(PORT, () => {
         console.log(`Municipal Service Server listening on port ${PORT}`);

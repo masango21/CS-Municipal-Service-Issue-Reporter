@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 
-type Role = "resident" | "admin";
+type Role = "resident" | "staff" | "super_admin";
 
 type AppUser = {
   id: string;
@@ -63,8 +63,8 @@ async function authenticate(path: string, payload: Record<string, string>, role:
     });
     const result = await response.json() as {
       message?: string;
-      user?: Omit<AppUser, "role">;
-      admin?: Omit<AppUser, "role">;
+      user?: Omit<AppUser, "role"> & { role?: Role };
+      admin?: Omit<AppUser, "role"> & { role?: Role };
     };
     const account = result.user ?? result.admin;
 
@@ -75,7 +75,7 @@ async function authenticate(path: string, payload: Record<string, string>, role:
     return {
       ok: true,
       message: result.message ?? "Authentication successful.",
-      user: { ...account, role },
+      user: { ...account, role: account.role ?? role },
     };
   } catch {
     return { ok: false, message: "Authentication service is unavailable. Please try again." };
@@ -105,7 +105,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then(({ user }) => {
         if (!active) return;
         setResidentUser(user?.role === "resident" ? user : null);
-        setAdminUser(user?.role === "admin" ? user : null);
+        setAdminUser(user?.role === "staff" || user?.role === "super_admin" ? user : null);
       })
       .catch(() => {
         if (!active) return;
@@ -155,7 +155,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       const result = await authenticate("/api/admin/register", {
         name: trimmedName, email: trimmedEmail, password, registrationKey,
-      }, "admin");
+      }, "staff");
       if (result.ok && result.user) {
         setAdminUser(result.user);
         setResidentUser(null);
@@ -173,7 +173,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { ok: false, message: "Email and password are required." };
       }
 
-      const result = await authenticate("/api/admin/login", { email: trimmedEmail, password }, "admin");
+      const result = await authenticate("/api/admin/login", { email: trimmedEmail, password }, "staff");
       if (result.ok && result.user) {
         setAdminUser(result.user);
         setResidentUser(null);

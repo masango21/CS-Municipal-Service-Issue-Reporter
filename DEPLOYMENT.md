@@ -20,10 +20,14 @@ This repository contains deployment scaffolding, but no service is deployed or v
 - `DATABASE_URL`: production Neon connection string after rotating the database password.
 - `JWT_SECRET`: newly generated high-entropy secret.
 - `ADMIN_REGISTRATION_KEYS`: newly generated, comma-separated staff invitation keys.
+- `SUPER_ADMIN_BOOTSTRAP_TOKEN`: temporary high-entropy token used once to create the first super-admin; remove immediately after bootstrap.
+- `MDB_MUNICIPALITY_FEATURE_LAYER_URL`: optional MDB point-in-polygon layer override. Verify active municipal demarcation boundaries before public launch; current item metadata says “2021” while its service description says “2018”.
+- `REVERSE_GEOCODER_URL`, `GEOCODING_USER_AGENT`, `GEOCODING_CONTACT`: server-side reverse-geocoder configuration and identifying contact. The public Nominatim endpoint is rate-limited to one request/second/application and subject to its usage policy; use a suitable provider or self-host for public traffic.
+- `ENABLE_MUNICIPALITY_SCOPING_MIGRATION=true`: set only after migration 002 passes disposable-PostgreSQL verification and production change approval. Without it, startup refuses to apply the new migration.
 - `CLIENT_ORIGIN`: exact HTTPS frontend origin.
 - `DATABASE_SSL=true` and `SESSION_COOKIE_SAME_SITE=lax` for HTTPS on same-site custom domains.
 
-Production startup refuses to use JSON file storage. The API applies versioned SQL files under `server/sql/migrations/` at startup; validate them on a disposable database branch first. The API does not seed reports, residents, or staff accounts.
+Production startup refuses to use JSON file storage. The API applies versioned SQL files under `server/sql/migrations/` at startup; migration 002 is explicitly gated after disposable-database validation and production approval. The API does not seed reports, residents, or staff accounts.
 
 ## Vercel Client
 

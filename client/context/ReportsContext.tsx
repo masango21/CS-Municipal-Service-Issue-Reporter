@@ -78,6 +78,7 @@ export function ReportsProvider({ children }: { children: ReactNode }) {
   const [isReportsReady, setIsReportsReady] = useState(false);
   const [reportsError, setReportsError] = useState<string | null>(null);
   const reportMutationVersion = useRef(0);
+  const staffReportsAreActive = useRef(false);
 
   useEffect(() => {
     const bootstrapReports = async () => {
@@ -86,6 +87,7 @@ export function ReportsProvider({ children }: { children: ReactNode }) {
         const backendReports = await fetchReportsFromApi();
         setReportsError(null);
         setReports((current) => {
+          if (staffReportsAreActive.current) return current;
           if (reportMutationVersion.current === versionAtStart) {
             return backendReports;
           }
@@ -141,6 +143,13 @@ export function ReportsProvider({ children }: { children: ReactNode }) {
     const versionAtStart = reportMutationVersion.current;
     const nextReports = await fetchReportsFromApi(staffView);
     setReportsError(null);
+    if (staffView) {
+      staffReportsAreActive.current = true;
+      reportMutationVersion.current += 1;
+      setReports(nextReports);
+      return;
+    }
+    staffReportsAreActive.current = false;
     setReports((current) => {
       if (reportMutationVersion.current === versionAtStart) {
         return nextReports;

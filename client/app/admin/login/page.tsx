@@ -16,7 +16,7 @@ export default function AdminLoginPage() {
 
   useEffect(() => {
     if (isAuthReady && adminUser) {
-      router.replace("/admin/dashboard");
+      router.replace(adminUser.role === "super_admin" ? "/admin/municipalities" : "/admin/dashboard");
     }
   }, [adminUser, isAuthReady, router]);
 
@@ -30,7 +30,7 @@ export default function AdminLoginPage() {
     }
 
     setError("");
-    router.push("/admin/dashboard");
+    router.push(result.user?.role === "super_admin" ? "/admin/municipalities" : "/admin/dashboard");
   };
 
   return (
@@ -90,6 +90,9 @@ export default function AdminLoginPage() {
           <Link href="/admin/register" className="font-semibold text-cyan-400">
             {t("registerStaffAccount")}
           </Link>
+        </p>
+        <p className="mt-3 text-center text-xs text-slate-400">
+          <Link href="/admin/bootstrap" className="font-semibold text-cyan-400">Initialize first super-admin account</Link>
         </p>
       </div>
     </main>

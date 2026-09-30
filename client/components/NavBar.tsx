@@ -8,7 +8,7 @@ export function NavBar() {
   const { locale, setLocale, t, languages } = useLanguage();
   const { residentUser, adminUser, logout } = useAuth();
 
-  const currentRole = residentUser ? "resident" : adminUser ? "admin" : null;
+  const currentRole = residentUser ? "resident" : adminUser ? adminUser.role : null;
 
   const publicNav = [
     { href: "/", label: t("navHome") },
@@ -27,19 +27,24 @@ export function NavBar() {
     { href: "/admin/dashboard#queue", label: "Report queue" },
   ];
 
-  const navItems = currentRole === "resident" ? residentNav : currentRole === "admin" ? adminNav : publicNav;
-  const activeUser = currentRole === "resident" ? residentUser : currentRole === "admin" ? adminUser : null;
+  const superAdminNav = [
+    { href: "/admin/municipalities", label: "Municipalities" },
+    { href: "/admin/staff", label: "Staff access" },
+  ];
+  const isAdminRole = currentRole === "staff" || currentRole === "super_admin";
+  const navItems = currentRole === "resident" ? residentNav : currentRole === "staff" ? adminNav : currentRole === "super_admin" ? superAdminNav : publicNav;
+  const activeUser = currentRole === "resident" ? residentUser : isAdminRole ? adminUser : null;
 
   return (
     <header className="border-b border-slate-200 bg-white/90 backdrop-blur-sm">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
         <Link href="/" className="flex items-center gap-3">
-          <div className={`flex h-10 w-10 items-center justify-center rounded-xl font-bold text-white ${currentRole === "admin" ? "bg-cyan-600" : "bg-emerald-600"}`}>
+          <div className={`flex h-10 w-10 items-center justify-center rounded-xl font-bold text-white ${isAdminRole ? "bg-cyan-600" : "bg-emerald-600"}`}>
             MS
           </div>
           <div>
             <p className="text-lg font-bold text-slate-900">{t("appName")}</p>
-            <p className="text-xs text-slate-500">{currentRole === "admin" ? "Municipal operations" : t("location")}</p>
+            <p className="text-xs text-slate-500">{currentRole === "super_admin" ? "System administration" : isAdminRole ? "Municipal operations" : t("location")}</p>
           </div>
         </Link>
 
@@ -70,8 +75,8 @@ export function NavBar() {
 
           {activeUser ? (
             <>
-              <div className={`hidden rounded-full border px-3 py-2 text-xs font-semibold md:block ${currentRole === "admin" ? "border-cyan-200 bg-cyan-50 text-cyan-700" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
-                {currentRole === "admin" ? "Municipal Staff" : "Resident"} · {activeUser.name.split(" ")[0]}
+              <div className={`hidden rounded-full border px-3 py-2 text-xs font-semibold md:block ${isAdminRole ? "border-cyan-200 bg-cyan-50 text-cyan-700" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
+                {currentRole === "super_admin" ? "Super Admin" : currentRole === "staff" ? "Municipal Staff" : "Resident"} · {activeUser.name.split(" ")[0]}
               </div>
               <button
                 type="button"

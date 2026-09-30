@@ -56,6 +56,13 @@ async function initDatabase() {
     const migrationFiles = fs.readdirSync(migrationDirectory)
       .filter((file) => /^\d+_[a-z0-9_-]+\.sql$/i.test(file))
       .sort();
+    const appliedMigrations = await client.query('SELECT version FROM schema_migrations;');
+    const appliedVersions = new Set(appliedMigrations.rows.map((row) => row.version));
+    const municipalityMigration = '002_municipality_scoping.sql';
+    if (migrationFiles.includes(municipalityMigration) && !appliedVersions.has(municipalityMigration) &&
+        process.env.ENABLE_MUNICIPALITY_SCOPING_MIGRATION !== 'true') {
+      throw new Error('Municipality migration 002 is pending. Verify it on a disposable PostgreSQL database and explicitly enable it before applying.');
+    }
 
     for (const version of migrationFiles) {
       const existing = await client.query('SELECT 1 FROM schema_migrations WHERE version = $1;', [version]);
@@ -138,7 +145,7 @@ async function createResidentInDb(user) {
 async function getStaffByEmail(email) {
   if (!pool) return null;
   const result = await pool.query(
-    `SELECT id, name, email, password_hash AS password, created_at AS "createdAt"
+    `SELECT id, name, email, password_hash AS password, role, is_active AS "isActive", created_at AS "createdAt"
      FROM staff_users WHERE LOWER(email) = LOWER($1) LIMIT 1;`,
     [email],
   );
@@ -148,7 +155,7 @@ async function getStaffByEmail(email) {
 async function getStaffByIdFromDb(staffId, queryPool = pool) {
   if (!queryPool) return null;
   const result = await queryPool.query(
-    `SELECT id, name, email FROM staff_users WHERE id = $1 LIMIT 1;`,
+    `SELECT id, name, email, role, is_active AS "isActive" FROM staff_users WHERE id = $1 LIMIT 1;`,
     [staffId],
   );
   return result.rows[0] || null;
@@ -157,18 +164,179 @@ async function getStaffByIdFromDb(staffId, queryPool = pool) {
 async function createStaffInDb(staff) {
   if (!pool) return null;
   const result = await pool.query(
-    `INSERT INTO staff_users (id, name, email, password_hash)
-     VALUES ($1, $2, $3, $4)
-     RETURNING id, name, email, password_hash AS password, created_at AS "createdAt";`,
-    [staff.id, staff.name, staff.email, staff.password],
+    `INSERT INTO staff_users (id, name, email, password_hash, role)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, name, email, password_hash AS password, role, created_at AS "createdAt";`,
+    [staff.id, staff.name, staff.email, staff.password, staff.role || 'staff'],
   );
   return result.rows[0];
 }
 
 async function getStaffDirectoryFromDb() {
   if (!pool) return [];
-  const result = await pool.query('SELECT id, name, email FROM staff_users ORDER BY name ASC;');
+  const result = await pool.query('SELECT id, name, email, role, is_active AS "isActive" FROM staff_users ORDER BY name ASC;');
   return result.rows;
+}
+
+async function getStaffById(staffId) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `SELECT id, name, email, role, is_active AS "isActive" FROM staff_users WHERE id = $1 LIMIT 1;`,
+    [staffId],
+  );
+  return result.rows[0] || null;
+}
+
+async function countSuperAdmins() {
+  if (!pool) return 0;
+  const result = await pool.query("SELECT COUNT(*)::INTEGER AS count FROM staff_users WHERE role = 'super_admin';");
+  return Number(result.rows[0]?.count || 0);
+}
+
+async function upsertMunicipality(municipality) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `INSERT INTO municipalities
+       (id, name, province, municipality_code, municipality_type, boundary_source, boundary_dataset)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (municipality_code) DO UPDATE SET
+       name = EXCLUDED.name,
+       province = EXCLUDED.province,
+       municipality_type = EXCLUDED.municipality_type,
+       boundary_source = EXCLUDED.boundary_source,
+       boundary_dataset = EXCLUDED.boundary_dataset,
+       updated_at = NOW()
+     RETURNING id, name, province, municipality_code AS code,
+       municipality_type AS type, boundary_source AS "boundarySource",
+       boundary_dataset AS "boundaryDataset", access_code_hash AS "accessCodeHash",
+       access_code_version AS "accessCodeVersion", active;`,
+    [municipality.code, municipality.name, municipality.province, municipality.code,
+      municipality.type, municipality.boundarySource, municipality.boundaryDataset],
+  );
+  return result.rows[0] || null;
+}
+
+async function getMunicipalityById(municipalityId) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `SELECT id, name, province, municipality_code AS code,
+       municipality_type AS type, boundary_source AS "boundarySource",
+       boundary_dataset AS "boundaryDataset", access_code_hash AS "accessCodeHash",
+       access_code_version AS "accessCodeVersion", active
+     FROM municipalities WHERE id = $1 LIMIT 1;`,
+    [municipalityId],
+  );
+  return result.rows[0] || null;
+}
+
+async function listMunicipalities() {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT m.id, m.name, m.province, m.municipality_code AS code,
+       m.municipality_type AS type, m.boundary_source AS "boundarySource",
+       m.boundary_dataset AS "boundaryDataset", m.active,
+       COUNT(DISTINCT i.id)::INTEGER AS "reportCount",
+       COUNT(DISTINCT sm.staff_id)::INTEGER AS "staffCount"
+     FROM municipalities m
+     LEFT JOIN issues i ON i.municipality_id = m.id
+     LEFT JOIN staff_municipalities sm ON sm.municipality_id = m.id
+     GROUP BY m.id
+     ORDER BY m.province, m.name;`,
+  );
+  return result.rows;
+}
+
+async function getStaffMunicipalities(staffId) {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT m.id, m.name, m.province, m.municipality_code AS code,
+       m.municipality_type AS type
+     FROM staff_municipalities sm
+     JOIN municipalities m ON m.id = sm.municipality_id
+     WHERE sm.staff_id = $1 AND m.active = TRUE
+     ORDER BY m.name;`,
+    [staffId],
+  );
+  return result.rows;
+}
+
+async function staffHasMunicipality(staffId, municipalityId) {
+  if (!pool) return false;
+  const result = await pool.query(
+    `SELECT 1 FROM staff_municipalities sm
+     JOIN municipalities m ON m.id = sm.municipality_id
+     WHERE sm.staff_id = $1 AND sm.municipality_id = $2 AND m.active = TRUE LIMIT 1;`,
+    [staffId, municipalityId],
+  );
+  return result.rowCount > 0;
+}
+
+async function assignStaffMunicipality(staffId, municipalityId) {
+  if (!pool) return false;
+  const result = await pool.query(
+    `INSERT INTO staff_municipalities (staff_id, municipality_id)
+     SELECT $1, $2
+     WHERE EXISTS (SELECT 1 FROM staff_users WHERE id = $1 AND role = 'staff')
+       AND EXISTS (SELECT 1 FROM municipalities WHERE id = $2 AND active = TRUE)
+     ON CONFLICT (staff_id, municipality_id) DO NOTHING
+     RETURNING staff_id;`,
+    [staffId, municipalityId],
+  );
+  return result.rowCount > 0;
+}
+
+async function removeStaffMunicipality(staffId, municipalityId) {
+  if (!pool) return false;
+  const result = await pool.query(
+    'DELETE FROM staff_municipalities WHERE staff_id = $1 AND municipality_id = $2;',
+    [staffId, municipalityId],
+  );
+  return result.rowCount > 0;
+}
+
+async function setStaffActive(staffId, active) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `UPDATE staff_users SET is_active = $2
+     WHERE id = $1 AND role = 'staff'
+     RETURNING id, is_active AS "isActive";`,
+    [staffId, active],
+  );
+  return result.rows[0] || null;
+}
+
+async function setMunicipalityActive(municipalityId, active) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `UPDATE municipalities SET active = $2, access_code_version = access_code_version + 1,
+       updated_at = NOW()
+     WHERE id = $1
+     RETURNING id, active, access_code_version AS "accessCodeVersion";`,
+    [municipalityId, active],
+  );
+  return result.rows[0] || null;
+}
+
+async function setMunicipalityAccessCode(municipalityId, accessCodeHash) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `UPDATE municipalities SET access_code_hash = $2,
+       access_code_version = access_code_version + 1, updated_at = NOW()
+     WHERE id = $1
+     RETURNING id, access_code_version AS "accessCodeVersion";`,
+    [municipalityId, accessCodeHash],
+  );
+  return result.rows[0] || null;
+}
+
+async function createAuditLog({ userId, municipalityId, reportId, action, details = {} }) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `INSERT INTO audit_logs (user_id, municipality_id, report_id, action, details)
+     VALUES ($1, $2, $3, $4, $5::jsonb) RETURNING id, created_at AS "createdAt";`,
+    [userId, municipalityId || null, reportId || null, action, JSON.stringify(details)],
+  );
+  return result.rows[0] || null;
 }
 
 function normalizeReportRow(row) {
@@ -181,9 +349,10 @@ function normalizeReportRow(row) {
       latitude: Number(row.latitude),
       longitude: Number(row.longitude),
       city: row.city || '',
-      municipality: row.municipality || '',
+      municipality: row.municipality_name || row.municipality || '',
       address: row.address || '',
     },
+    municipalityId: row.municipality_id || undefined,
     priority: row.priority || 'Medium',
     status: row.status || 'Reported',
     reportedBy: row.reported_by || 'Resident',
@@ -199,11 +368,12 @@ async function getReportsFromDb(query = {}) {
     return [];
   }
 
-  const { category, status, search, residentId } = query;
+  const { category, status, search, residentId, municipalityId } = query;
   let sql = `
-    SELECT i.*, c.name AS category, c.slug AS category_slug
+    SELECT i.*, c.name AS category, c.slug AS category_slug, m.name AS municipality_name
     FROM issues i
     LEFT JOIN issue_categories c ON c.id = i.category_id
+    LEFT JOIN municipalities m ON m.id = i.municipality_id
     WHERE 1 = 1
   `;
   const params = [];
@@ -224,6 +394,12 @@ async function getReportsFromDb(query = {}) {
   if (residentId) {
     sql += ` AND i.resident_id = $${i}`;
     params.push(String(residentId));
+    i += 1;
+  }
+
+  if (municipalityId) {
+    sql += ` AND i.municipality_id = $${i}`;
+    params.push(String(municipalityId));
     i += 1;
   }
 
@@ -269,6 +445,8 @@ async function createReportInDb(payload) {
         description,
         city,
         municipality,
+        municipality_id,
+        address,
         latitude,
         longitude,
         status,
@@ -280,7 +458,7 @@ async function createReportInDb(payload) {
         resident_id,
         reported_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
       RETURNING *;
     `,
     [
@@ -288,6 +466,8 @@ async function createReportInDb(payload) {
       payload.description,
       payload.location?.city || '',
       payload.location?.municipality || '',
+      payload.location?.municipalityId || null,
+      payload.location?.address || '',
       Number(payload.location.latitude),
       Number(payload.location.longitude),
       payload.status || 'Reported',
@@ -304,21 +484,35 @@ async function createReportInDb(payload) {
   return normalizeReportRow(row);
 }
 
-async function updateReportStatusInDb(reportId, newStatus) {
+async function updateReportStatusInDb(reportId, newStatus, authorizationScope) {
   if (!pool) {
     return null;
   }
 
+  const scopeSql = authorizationScope
+    ? `AND municipality_id = $3
+       AND EXISTS (
+         SELECT 1 FROM staff_municipalities sm
+         JOIN municipalities m ON m.id = sm.municipality_id
+         JOIN staff_users su ON su.id = sm.staff_id
+         WHERE sm.staff_id = $4 AND sm.municipality_id = $3
+           AND m.active = TRUE AND m.access_code_hash IS NOT NULL
+           AND m.access_code_version = $5 AND su.is_active = TRUE
+       )`
+    : '';
+  const params = authorizationScope
+    ? [newStatus, reportId, authorizationScope.municipalityId, authorizationScope.staffId, authorizationScope.accessCodeVersion]
+    : [newStatus, reportId];
   const result = await pool.query(
     `
       UPDATE issues
         SET status = $1,
           operations = jsonb_set(operations, '{status}', to_jsonb($1::text), true),
           updated_at = NOW()
-      WHERE id = $2
+      WHERE id = $2 ${scopeSql}
       RETURNING *;
     `,
-    [newStatus, reportId],
+    params,
   );
 
   if (!result.rows[0]) {
@@ -328,11 +522,33 @@ async function updateReportStatusInDb(reportId, newStatus) {
   return normalizeReportRow(result.rows[0]);
 }
 
-async function updateReportOperationsInDb(reportId, operations) {
+async function updateReportOperationsInDb(reportId, operations, authorizationScope) {
   if (!pool) {
     return null;
   }
 
+  const scopeSql = authorizationScope
+    ? `AND municipality_id = $7
+       AND EXISTS (
+         SELECT 1 FROM staff_municipalities sm
+         JOIN municipalities m ON m.id = sm.municipality_id
+         JOIN staff_users su ON su.id = sm.staff_id
+         WHERE sm.staff_id = $8 AND sm.municipality_id = $7
+           AND m.active = TRUE AND m.access_code_hash IS NOT NULL
+           AND m.access_code_version = $9 AND su.is_active = TRUE
+       )`
+    : '';
+  const params = [
+    operations.status || 'Reported',
+    operations.priority || 'Medium',
+    operations.category || 'Other Municipal Issue',
+    String(operations.category || 'Other Municipal Issue').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+    JSON.stringify(operations),
+    reportId,
+  ];
+  if (authorizationScope) {
+    params.push(authorizationScope.municipalityId, authorizationScope.staffId, authorizationScope.accessCodeVersion);
+  }
   const result = await pool.query(
     `
       UPDATE issues
@@ -342,17 +558,10 @@ async function updateReportOperationsInDb(reportId, operations) {
           category_id = (SELECT id FROM issue_categories WHERE slug = $4 LIMIT 1),
           operations = $5::jsonb,
           updated_at = NOW()
-      WHERE id = $6
+      WHERE id = $6 ${scopeSql}
       RETURNING *;
     `,
-    [
-      operations.status || 'Reported',
-      operations.priority || 'Medium',
-      operations.category || 'Other Municipal Issue',
-      String(operations.category || 'Other Municipal Issue').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
-      JSON.stringify(operations),
-      reportId,
-    ],
+    params,
   );
 
   return result.rows[0] ? normalizeReportRow(result.rows[0]) : null;
@@ -384,8 +593,21 @@ module.exports = {
   createResidentInDb,
   getStaffByEmail,
   getStaffByIdFromDb,
+  getStaffById,
   createStaffInDb,
   getStaffDirectoryFromDb,
+  countSuperAdmins,
+  upsertMunicipality,
+  getMunicipalityById,
+  listMunicipalities,
+  getStaffMunicipalities,
+  staffHasMunicipality,
+  assignStaffMunicipality,
+  removeStaffMunicipality,
+  setStaffActive,
+  setMunicipalityActive,
+  setMunicipalityAccessCode,
+  createAuditLog,
   getCategoriesFromDb,
   getReportsFromDb,
   createReportInDb,

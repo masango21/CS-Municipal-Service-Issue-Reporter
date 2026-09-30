@@ -13,6 +13,10 @@ export type IssueLocation = {
   address?: string;
   city?: string;
   municipality?: string;
+  municipalityId?: string;
+  province?: string;
+  municipalityType?: string;
+  geocodingAttribution?: string;
 };
 
 export type StaffNote = {

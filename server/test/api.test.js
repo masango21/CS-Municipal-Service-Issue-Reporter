@@ -1,22 +1,54 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { test, beforeEach, afterEach, after } = require('node:test');
 
 process.env.USE_FILE_STORE = 'true';
 process.env.NODE_ENV = 'test';
 process.env.ADMIN_REGISTRATION_KEYS = 'staff-invite-test-key,second-staff-invite-test-key';
+process.env.SUPER_ADMIN_BOOTSTRAP_TOKEN = 'bootstrap-test-only-token';
 const testStoreDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'municipal-service-api-test-'));
 process.env.DATA_STORE_PATH = path.join(testStoreDirectory, 'store.json');
 const assert = require('node:assert/strict');
 const { getStaffByIdFromDb } = require('../db');
 
 const { app, readStore, writeStore, createToken } = require('../index.js');
-const staffAuthorization = `Bearer ${createToken({ id: 'staff-1', email: 'staff@example.test', role: 'admin' })}`;
-const residentAuthorization = `Bearer ${createToken({ id: 'resident-1', name: 'Test Resident', email: 'resident@example.test', role: 'resident' })}`;
+app.set('trust proxy', 1);
+const staffAuthorization = `Bearer ${createToken({
+  id: 'staff-1', email: 'staff@example.test', role: 'staff', municipalityId: 'ZA-MOCK', accessCodeVersion: 1,
+})}`;
+const superAdminAuthorization = `Bearer ${createToken({ id: 'super-1', email: 'super@example.test', role: 'super_admin' })}`;
+const residentAuthorization = `Bearer ${createToken({ id: 'resident-1', name: 'Test Resident', email: 'fixture-resident@example.test', role: 'resident' })}`;
+const testMunicipality = {
+  id: 'ZA-MOCK', code: 'ZA-MOCK', name: 'Test Municipality', province: 'Gauteng', type: 'B',
+  boundarySource: 'Test fixture', boundaryDataset: 'Test fixture', accessCodeHash: 'scrypt:fixture:hash',
+  accessCodeVersion: 1, active: true,
+};
+let requestSequence = 0;
+
+function writeTestStore(reports = [], { users = [], admins = [] } = {}) {
+  writeStore({
+    reports,
+    users: [{ id: 'resident-1', name: 'Test Resident', email: 'fixture-resident@example.test', password: 'scrypt:fixture:hash' }, ...users],
+    admins: [
+      { id: 'staff-1', name: 'Operations Staff', email: 'staff@example.test', password: 'scrypt:fixture:hash', role: 'staff' },
+      { id: 'super-1', name: 'Test Super Admin', email: 'super@example.test', password: 'scrypt:fixture:hash', role: 'super_admin' },
+      ...admins,
+    ],
+    municipalities: [{ ...testMunicipality }],
+    staffMunicipalities: [{ staffId: 'staff-1', municipalityId: 'ZA-MOCK', createdAt: new Date().toISOString() }],
+    auditLogs: [],
+  });
+}
 
 function resetStore() {
-  writeStore({ reports: [], users: [], admins: [] });
+  writeTestStore();
+}
+
+function hashTestCode(code) {
+  const salt = 'test-code-salt';
+  return `scrypt:${salt}:${crypto.scryptSync(code, salt, 64).toString('hex')}`;
 }
 
 test('PostgreSQL staff lookup selects one staff member by ID without credentials', async () => {
@@ -26,18 +58,36 @@ test('PostgreSQL staff lookup selects one staff member by ID without credentials
     query: async (text, params) => {
       queryText = text;
       queryParams = params;
-      return { rows: [{ id: 'staff-1', name: 'Operations Staff', email: 'staff@example.test' }] };
+      return { rows: [{ id: 'staff-1', name: 'Operations Staff', email: 'staff@example.test', role: 'staff', isActive: true }] };
     },
   });
 
   assert.match(queryText, /FROM staff_users WHERE id = \$1/i);
   assert.doesNotMatch(queryText, /password_hash/i);
   assert.deepEqual(queryParams, ['staff-1']);
-  assert.deepEqual(staff, { id: 'staff-1', name: 'Operations Staff', email: 'staff@example.test' });
+  assert.deepEqual(staff, { id: 'staff-1', name: 'Operations Staff', email: 'staff@example.test', role: 'staff', isActive: true });
 });
 
 beforeEach(() => {
   resetStore();
+  app.locals.locationResolver = async (latitude, longitude) => ({
+    latitude,
+    longitude,
+    address: 'Test address',
+    city: 'Test City',
+    municipality: testMunicipality.name,
+    municipalityId: testMunicipality.id,
+    province: testMunicipality.province,
+    municipalityType: testMunicipality.type,
+    boundarySource: testMunicipality.boundarySource,
+    boundaryDataset: testMunicipality.boundaryDataset,
+    geocodingAttribution: 'Test attribution',
+  });
+  app.locals.municipalityLister = async () => [{
+    ...testMunicipality,
+    accessCodeHash: undefined,
+    accessCodeVersion: undefined,
+  }];
 });
 
 afterEach(() => {
@@ -57,6 +107,7 @@ async function request(path, options = {}) {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, {
       ...options,
       headers: {
+        'X-Forwarded-For': `192.0.2.${(requestSequence++ % 200) + 1}`,
         ...(options.headers || {}),
       },
     });
@@ -87,6 +138,177 @@ test('health endpoint reports zero reports at startup', async () => {
   assert.equal(response.body.reportsCount, 0);
 });
 
+test('super-admin bootstrap is token-gated and can only complete once', async () => {
+  writeStore({ reports: [], users: [], admins: [], municipalities: [], staffMunicipalities: [], auditLogs: [] });
+  const payload = {
+    name: 'Initial Administrator',
+    email: 'initial-admin@example.test',
+    password: 'initial-admin-strong-password',
+    bootstrapToken: process.env.SUPER_ADMIN_BOOTSTRAP_TOKEN,
+  };
+  const invalid = await request('/api/admin/bootstrap', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, bootstrapToken: 'invalid-token' }),
+  });
+  assert.equal(invalid.status, 403);
+
+  const created = await request('/api/admin/bootstrap', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.user.role, 'super_admin');
+  assert.ok(created.headers.get('set-cookie')?.includes('HttpOnly'));
+  assert.ok(/^scrypt:/.test(readStore().admins[0].password));
+
+  const repeated = await request('/api/admin/bootstrap', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  assert.equal(repeated.status, 409);
+});
+
+test('staff municipality assignment and account deactivation are super-admin-only', async () => {
+  writeStore({ reports: [], users: [], admins: [], municipalities: [], staffMunicipalities: [], auditLogs: [] });
+  const bootstrap = await request('/api/admin/bootstrap', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Initial Administrator', email: 'initial-admin@example.test',
+      password: 'initial-admin-strong-password', bootstrapToken: process.env.SUPER_ADMIN_BOOTSTRAP_TOKEN,
+    }),
+  });
+  const superCookie = bootstrap.headers.get('set-cookie').split(';', 1)[0];
+  const directory = await request('/api/admin/municipalities', { headers: { Cookie: superCookie } });
+  assert.equal(directory.status, 200);
+  assert.equal(Object.hasOwn(directory.body.municipalities[0], 'accessCodeHash'), false);
+
+  const registered = await request('/api/admin/register', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Assigned Staff', email: 'assigned-staff@example.test',
+      password: 'assigned-staff-strong-password', registrationKey: 'staff-invite-test-key',
+    }),
+  });
+  assert.equal(registered.status, 201);
+  const staffId = registered.body.admin.id;
+  const staffCookie = registered.headers.get('set-cookie').split(';', 1)[0];
+  const municipalityId = directory.body.municipalities[0].id;
+
+  const forbiddenAssignment = await request(`/api/admin/staff/${staffId}/municipalities/${municipalityId}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+  });
+  assert.equal(forbiddenAssignment.status, 403);
+  const assigned = await request(`/api/admin/staff/${staffId}/municipalities/${municipalityId}`, {
+    method: 'POST', headers: { Cookie: superCookie, Origin: 'http://localhost:3000' },
+  });
+  assert.equal(assigned.status, 200);
+
+  const staffMunicipalities = await request('/api/staff/municipalities', { headers: { Cookie: staffCookie } });
+  assert.equal(staffMunicipalities.status, 200);
+  assert.deepEqual(staffMunicipalities.body.municipalities.map((item) => item.id), [municipalityId]);
+  assert.equal(Object.hasOwn(staffMunicipalities.body.municipalities[0], 'accessCodeHash'), false);
+
+  const deactivated = await request(`/api/admin/staff/${staffId}/active`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: superCookie, Origin: 'http://localhost:3000' },
+    body: JSON.stringify({ active: false }),
+  });
+  assert.equal(deactivated.status, 200);
+  const inactiveSession = await request('/api/staff/municipalities', { headers: { Cookie: staffCookie } });
+  assert.equal(inactiveSession.status, 401);
+});
+
+test('municipality access checks assignment before code and reset revokes active scope', async () => {
+  const accessCode = 'test-municipality-access-code';
+  const store = readStore();
+  store.municipalities[0].accessCodeHash = hashTestCode(accessCode);
+  store.reports.push({
+    id: 'scoped-report', title: 'Scoped report', description: 'A report in the assigned municipality',
+    category: 'Pothole', location: { latitude: -25.7, longitude: 28.2, municipality: testMunicipality.name },
+    municipalityId: testMunicipality.id, priority: 'Medium', status: 'Reported', reportedBy: 'Resident',
+  });
+  store.admins.push({ id: 'staff-2', name: 'Unassigned Staff', email: 'unassigned@example.test', password: 'scrypt:fixture:hash', role: 'staff' });
+  writeStore(store);
+
+  const unassignedToken = createToken({ id: 'staff-2', email: 'unassigned@example.test', role: 'staff' });
+  const unassigned = await request(`/api/staff/municipalities/${testMunicipality.id}/verify-access`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${unassignedToken}` },
+    body: JSON.stringify({ accessCode }),
+  });
+  assert.equal(unassigned.status, 403);
+
+  const incorrect = await request(`/api/staff/municipalities/${testMunicipality.id}/verify-access`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: staffAuthorization },
+    body: JSON.stringify({ accessCode: 'wrong-code' }),
+  });
+  assert.equal(incorrect.status, 401);
+
+  const verified = await request(`/api/staff/municipalities/${testMunicipality.id}/verify-access`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: staffAuthorization },
+    body: JSON.stringify({ accessCode }),
+  });
+  assert.equal(verified.status, 200);
+  assert.equal(Object.hasOwn(verified.body.municipality, 'accessCodeHash'), false);
+  const scopedCookie = verified.headers.get('set-cookie').split(';', 1)[0];
+  const scopedReports = await request('/api/admin/reports', { headers: { Cookie: scopedCookie } });
+  assert.equal(scopedReports.status, 200);
+  assert.deepEqual(scopedReports.body.reports.map((report) => report.id), ['scoped-report']);
+
+  const reset = await request(`/api/admin/municipalities/${testMunicipality.id}/generate-access-code`, {
+    method: 'POST', headers: { Authorization: superAdminAuthorization },
+  });
+  assert.equal(reset.status, 200);
+  assert.equal(typeof reset.body.accessCode, 'string');
+  assert.notEqual(readStore().municipalities[0].accessCodeHash, reset.body.accessCode);
+  const revoked = await request('/api/admin/reports', { headers: { Cookie: scopedCookie } });
+  assert.equal(revoked.status, 403);
+});
+
+test('staff cannot read or mutate another municipality report or use super-admin functions', async () => {
+  const store = readStore();
+  store.municipalities.push({
+    ...testMunicipality,
+    id: 'ZA-OTHER',
+    code: 'ZA-OTHER',
+    name: 'Other Municipality',
+    accessCodeHash: hashTestCode('other-code'),
+  });
+  store.reports.push({
+    id: 'other-municipality-report', title: 'Private other-municipality report',
+    description: 'Must not leak through URL access.', category: 'Pothole',
+    municipalityId: 'ZA-OTHER', location: { latitude: -26.2, longitude: 28.0 },
+    priority: 'High', status: 'Reported', reportedBy: 'Resident',
+  });
+  writeStore(store);
+
+  const detail = await request('/api/admin/reports/other-municipality-report', { headers: { Authorization: staffAuthorization } });
+  assert.equal(detail.status, 403);
+  const publicAdminDetail = await request('/api/reports/other-municipality-report', { headers: { Authorization: staffAuthorization } });
+  assert.equal(publicAdminDetail.status, 200);
+
+  const status = await request('/api/reports/other-municipality-report/status', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: staffAuthorization },
+    body: JSON.stringify({ status: 'In Progress' }),
+  });
+  assert.equal(status.status, 403);
+
+  const triage = await request('/api/reports/other-municipality-report/triage', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: staffAuthorization },
+    body: JSON.stringify({ verified: true }),
+  });
+  assert.equal(triage.status, 403);
+
+  const note = await request('/api/reports/other-municipality-report/notes', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: staffAuthorization },
+    body: JSON.stringify({ text: 'Unauthorized note' }),
+  });
+  assert.equal(note.status, 403);
+
+  const staffDirectory = await request('/api/admin/staff', { headers: { Authorization: staffAuthorization } });
+  assert.equal(staffDirectory.status, 403);
+  const codeManagement = await request('/api/admin/municipalities/ZA-OTHER/generate-access-code', {
+    method: 'POST', headers: { Authorization: staffAuthorization },
+  });
+  assert.equal(codeManagement.status, 403);
+});
+
 test('staff registration requires the configured invite key and stores a password hash', async () => {
   const payload = { name: 'Test Staff', email: 'new-staff@example.test', password: 'strong-test-password' };
   const denied = await request('/api/admin/register', {
@@ -114,14 +336,14 @@ test('staff registration requires the configured invite key and stores a passwor
   assert.deepEqual(registered.map((response) => response.status), [201, 201]);
   assert.ok(registered.every((response) => response.headers.get('set-cookie')?.includes('HttpOnly')));
   assert.ok(registered.every((response) => !response.body.token));
-  assert.equal(registered[0].body.admin.role, 'admin');
+  assert.equal(registered[0].body.admin.role, 'staff');
   assert.ok(readStore().admins.every((admin) => /^scrypt:/.test(admin.password)));
 
   const staffCookie = registered[0].headers.get('set-cookie').split(';', 1)[0];
   const staffReports = await request('/api/admin/reports', {
     headers: { Cookie: staffCookie },
   });
-  assert.equal(staffReports.status, 200);
+  assert.equal(staffReports.status, 403);
 
   const login = await request('/api/admin/login', {
     method: 'POST',
@@ -174,6 +396,9 @@ test('resident accounts use hashed passwords and cookie-based sessions', async (
     }),
   });
   assert.equal(createdReport.status, 201);
+  assert.equal(createdReport.body.report.location.municipality, testMunicipality.name);
+  assert.equal(createdReport.body.report.location.municipalityId, testMunicipality.id);
+  assert.equal(createdReport.body.report.municipalityId, testMunicipality.id);
   assert.equal(createdReport.body.report.reportedBy, undefined);
   assert.equal(Object.hasOwn(createdReport.body.report, 'residentId'), false);
 
@@ -233,6 +458,22 @@ test('resident accounts use hashed passwords and cookie-based sessions', async (
   });
   assert.equal(logout.status, 200);
   assert.ok(logout.headers.get('set-cookie')?.startsWith('msr_session=;'));
+});
+
+test('report submission rejects coordinates without an authoritative municipality match', async () => {
+  app.locals.locationResolver = async () => null;
+  const response = await request('/api/reports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({
+      title: 'Unresolved location',
+      description: 'This report must not be created without a boundary match.',
+      category: 'Pothole',
+      location: { latitude: -25.7, longitude: 28.2, municipality: 'Forged Municipality', municipalityId: 'FORGED' },
+    }),
+  });
+  assert.equal(response.status, 422);
+  assert.equal(readStore().reports.length, 0);
 });
 
 test('categories endpoint returns the issue taxonomy', async () => {
@@ -298,7 +539,7 @@ test('report lifecycle creates and removes a report without leaving seeded data 
   const reportId = createResponse.body.report.id;
   const deleteResponse = await request(`/api/reports/${reportId}`, {
     method: 'DELETE',
-    headers: { Authorization: staffAuthorization },
+    headers: { Authorization: superAdminAuthorization },
   });
   assert.equal(deleteResponse.status, 200);
 
@@ -306,7 +547,7 @@ test('report lifecycle creates and removes a report without leaving seeded data 
   assert.equal(finalList.status, 200);
   assert.equal(finalList.body.reports.length, 0);
 
-  writeStore({ reports: [], users: [], admins: [] });
+  resetStore();
 });
 
 test('evidence uploads reject unapproved formats and images over the size limit', async () => {
@@ -391,7 +632,9 @@ test('reports endpoint supports category and status filters and updates status c
     },
   ];
 
-  writeStore({ reports: seed, users: [], admins: [] });
+  seed[0].municipalityId = testMunicipality.id;
+  seed[1].municipalityId = testMunicipality.id;
+  writeTestStore(seed);
 
   const filtered = await request('/api/reports?category=Pothole&status=Reported');
   assert.equal(filtered.status, 200);
@@ -402,7 +645,7 @@ test('reports endpoint supports category and status filters and updates status c
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${createToken({ id: 'staff-1', email: 'staff@example.test', role: 'admin' })}`,
+      Authorization: staffAuthorization,
     },
     body: JSON.stringify({ status: 'Resolved' }),
   });
@@ -426,7 +669,7 @@ test('reports endpoint supports category and status filters and updates status c
 
   const clearAll = await request('/api/reports', {
     method: 'DELETE',
-    headers: { Authorization: staffAuthorization },
+    headers: { Authorization: superAdminAuthorization },
   });
   assert.equal(clearAll.status, 200);
   assert.equal(clearAll.body.removedCount, 2);
@@ -435,12 +678,11 @@ test('reports endpoint supports category and status filters and updates status c
   assert.equal(finalState.status, 200);
   assert.equal(finalState.body.reports.length, 0);
 
-  writeStore({ reports: [], users: [], admins: [] });
+  resetStore();
 });
 
-test('report status changes require a valid staff token and admin role', async () => {
-  writeStore({
-    reports: [{
+test('report status changes require a valid staff token and assigned municipality access', async () => {
+  writeTestStore([{
       id: 'protected-report',
       title: 'Protected report',
       description: 'A report for auth testing',
@@ -449,10 +691,8 @@ test('report status changes require a valid staff token and admin role', async (
       priority: 'High',
       status: 'Reported',
       reportedBy: 'Resident',
-    }],
-    users: [],
-    admins: [],
-  });
+      municipalityId: testMunicipality.id,
+  }]);
   const path = '/api/reports/protected-report/status';
   const body = JSON.stringify({ status: 'Under Review' });
 
@@ -471,10 +711,9 @@ test('report status changes require a valid staff token and admin role', async (
   });
   assert.equal(resident.status, 403);
 
-  const adminToken = createToken({ id: 'staff-1', email: 'staff@example.test', role: 'admin' });
   const staff = await request(path, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+    headers: { 'Content-Type': 'application/json', Authorization: staffAuthorization },
     body,
   });
   assert.equal(staff.status, 200);
@@ -485,16 +724,14 @@ test('staff triage, assignments, notes, updates, and duplicate links persist wit
   const primary = {
     id: 'primary-report', title: 'Primary pothole', description: 'A pothole', category: 'Pothole',
     location: { latitude: -25.7, longitude: 28.2 }, priority: 'Medium', status: 'Reported',
-    reportedBy: 'Resident',
+    reportedBy: 'Resident', residentId: 'resident-1',
   };
   const duplicate = {
     ...primary, id: 'duplicate-report', title: 'Nearby pothole',
   };
-  writeStore({
-    reports: [primary, duplicate],
-    users: [],
-    admins: [{ id: 'staff-1', name: 'Operations Staff', email: 'staff@example.test', password: 'hashed' }],
-  });
+  primary.municipalityId = testMunicipality.id;
+  duplicate.municipalityId = testMunicipality.id;
+  writeTestStore([primary, duplicate]);
 
   const triage = await request('/api/reports/duplicate-report/triage', {
     method: 'PATCH',
@@ -548,6 +785,13 @@ test('staff triage, assignments, notes, updates, and duplicate links persist wit
   assert.equal(publicReport.body.report.residentUpdates.length, 1);
   assert.equal(publicReport.body.report.residentUpdates[0].text, 'A maintenance team is attending to this issue.');
   assert.equal(Object.hasOwn(publicReport.body.report.residentUpdates[0], 'authorId'), false);
+
+  const residentReport = await request('/api/my/reports', { headers: { Authorization: residentAuthorization } });
+  assert.equal(residentReport.status, 200);
+  assert.equal(residentReport.body.reports.length, 2);
+  assert.equal(Object.hasOwn(residentReport.body.reports[0], 'staffNotes'), false);
+  assert.equal(Object.hasOwn(residentReport.body.reports[0], 'assignedStaffName'), false);
+  assert.equal(Object.hasOwn(residentReport.body.reports[0], 'reportedBy'), false);
 
   const publicList = await request('/api/reports');
   const publicDuplicate = publicList.body.reports.find((report) => report.id === 'duplicate-report');
