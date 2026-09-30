@@ -18,7 +18,7 @@ export default function AdminRegisterPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (isAuthReady && adminUser?.token) {
+    if (isAuthReady && adminUser) {
       router.replace("/admin/dashboard");
     }
   }, [adminUser, isAuthReady, router]);

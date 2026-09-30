@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import { PriorityBadge } from "@/components/PriorityBadge";
@@ -39,16 +40,16 @@ export default function StaffReportPage() {
 
   useEffect(() => {
     if (!isAuthReady) return;
-    if (!adminUser?.token) {
+    if (!adminUser) {
       router.replace("/admin/login");
       return;
     }
 
     let active = true;
     void Promise.all([
-      fetchStaffReport(reportId, adminUser.token),
-      fetchStaffDirectory(adminUser.token),
-      refreshReports(adminUser.token),
+      fetchStaffReport(reportId),
+      fetchStaffDirectory(),
+      refreshReports(true),
     ]).then(([loadedIssue, loadedStaff]) => {
       if (!active) return;
       setIssue(loadedIssue);
@@ -67,11 +68,11 @@ export default function StaffReportPage() {
     });
 
     return () => { active = false; };
-  }, [adminUser?.token, fetchStaffDirectory, fetchStaffReport, isAuthReady, refreshReports, reportId, router]);
+  }, [adminUser, fetchStaffDirectory, fetchStaffReport, isAuthReady, refreshReports, reportId, router]);
 
   const saveTriage = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!adminUser?.token) return;
+    if (!adminUser) return;
     setBusy(true);
     setError("");
     setMessage("");
@@ -85,7 +86,7 @@ export default function StaffReportPage() {
         maintenanceTeam,
         assignedStaffId,
         duplicateOf,
-      }, adminUser.token);
+      });
       setIssue(updated);
       setMessage("Triage changes saved.");
     } catch (saveError) {
@@ -97,11 +98,11 @@ export default function StaffReportPage() {
 
   const submitStaffNote = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!issue || !adminUser?.token || !noteText.trim()) return;
+    if (!issue || !adminUser || !noteText.trim()) return;
     setBusy(true);
     setError("");
     try {
-      const note = await addStaffNote(issue.id, noteText.trim(), adminUser.token);
+      const note = await addStaffNote(issue.id, noteText.trim());
       setIssue((current) => current ? { ...current, staffNotes: [...(current.staffNotes ?? []), note] } : current);
       setNoteText("");
     } catch (noteError) {
@@ -113,11 +114,11 @@ export default function StaffReportPage() {
 
   const publishUpdate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!issue || !adminUser?.token || !updateText.trim()) return;
+    if (!issue || !adminUser || !updateText.trim()) return;
     setBusy(true);
     setError("");
     try {
-      const update = await addResidentUpdate(issue.id, updateStatus, updateText.trim(), adminUser.token);
+      const update = await addResidentUpdate(issue.id, updateStatus, updateText.trim());
       setIssue((current) => current ? {
         ...current,
         status: update.status,
@@ -132,7 +133,7 @@ export default function StaffReportPage() {
     }
   };
 
-  if (!isAuthReady || !adminUser?.token || !issue) {
+  if (!isAuthReady || !adminUser || !issue) {
     return (
       <main className="flex min-h-[60vh] items-center justify-center bg-slate-950 px-4 text-white" aria-busy="true">
         <p role={error ? "alert" : "status"} className="text-sm text-slate-300">{error || "Loading report operations..."}</p>
@@ -260,7 +261,7 @@ export default function StaffReportPage() {
               <h2 className="text-base font-semibold">Report description</h2>
               <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-300">{issue.description}</p>
               <p className="mt-4 text-xs text-slate-400">Submitted by {issue.reportedBy}</p>
-              {issue.image && <img src={issue.image} alt={`Evidence for ${issue.title}`} className="mt-4 max-h-56 w-full rounded-lg object-cover" />}
+              {issue.image && <Image src={issue.image} alt={`Evidence for ${issue.title}`} width={1000} height={600} unoptimized className="mt-4 max-h-56 w-full rounded-lg object-cover" />}
             </section>
           </aside>
         </div>

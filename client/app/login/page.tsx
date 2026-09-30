@@ -30,9 +30,9 @@ export default function ResidentLoginPage() {
     }
   }, [adminUser, isAuthReady, residentUser, router]);
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const result = loginResident(email, password);
+    const result = await loginResident(email, password);
 
     if (!result.ok) {
       setError(result.message);

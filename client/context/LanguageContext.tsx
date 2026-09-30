@@ -2,6 +2,7 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -31,18 +32,14 @@ function isSupportedLanguage(value: string | null): value is SupportedLanguageCo
 }
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocaleState] = useState<SupportedLanguageCode>(defaultLanguage);
-
-  useEffect(() => {
+  const [locale, setLocaleState] = useState<SupportedLanguageCode>(() => {
     if (typeof window === "undefined") {
-      return;
+      return defaultLanguage;
     }
 
     const storedLocale = window.localStorage.getItem(STORAGE_KEY);
-    if (isSupportedLanguage(storedLocale)) {
-      setLocaleState(storedLocale);
-    }
-  }, []);
+    return isSupportedLanguage(storedLocale) ? storedLocale : defaultLanguage;
+  });
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -53,18 +50,21 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
     document.documentElement.lang = locale;
   }, [locale]);
 
-  const setLocale = (nextLocale: SupportedLanguageCode) => {
+  const setLocale = useCallback((nextLocale: SupportedLanguageCode) => {
     setLocaleState(nextLocale);
-  };
+  }, []);
 
-  const t = (key: string) => {
-    const phrase = translations[locale][key] ?? translations[defaultLanguage][key] ?? key;
-    return phrase;
-  };
+  const t = useCallback(
+    (key: string) => {
+      const phrase = translations[locale][key] ?? translations[defaultLanguage][key] ?? key;
+      return phrase;
+    },
+    [locale],
+  );
 
   const value = useMemo<LanguageContextValue>(
     () => ({ locale, setLocale, t, languages: supportedLanguages }),
-    [locale],
+    [locale, setLocale, t],
   );
 
   return <LanguageContext.Provider value={value}>{children}</LanguageContext.Provider>;

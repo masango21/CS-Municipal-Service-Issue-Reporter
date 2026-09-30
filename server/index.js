@@ -1,6 +1,9 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
+const helmet = require('helmet');
+const { rateLimit } = require('express-rate-limit');
 const fs = require('fs');
 const path = require('path');
 const jwt = require('jsonwebtoken');
@@ -8,6 +11,7 @@ const crypto = require('crypto');
 require('dotenv').config({ path: path.join(__dirname, '.env.staff-invites') });
 const {
   initDatabase,
+  getReportCountFromDb,
   getCategoriesFromDb,
   getReportsFromDb,
   createReportInDb,
@@ -15,13 +19,26 @@ const {
   updateReportOperationsInDb,
   deleteReportInDb,
   deleteAllReportsInDb,
+  getResidentByEmail,
+  createResidentInDb,
+  getStaffByEmail,
+  getStaffByIdFromDb,
+  createStaffInDb,
+  getStaffDirectoryFromDb,
+  DEFAULT_CATEGORIES,
   pool,
 } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-const DATA_DIR = path.join(__dirname, 'data');
-const STORE_PATH = path.join(DATA_DIR, 'store.json');
+const SESSION_COOKIE = 'msr_session';
+const CLIENT_ORIGINS = (process.env.CLIENT_ORIGIN || 'http://localhost:3000')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const SESSION_MAX_AGE_MS = 60 * 60 * 1000;
+const STORE_PATH = process.env.DATA_STORE_PATH || path.join(__dirname, 'data', 'store.json');
+const DATA_DIR = path.dirname(STORE_PATH);
 
 const VALID_STATUSES = [
   'Reported',
@@ -101,24 +118,56 @@ function createToken(payload) {
   return jwt.sign(payload, secret, { expiresIn: '1h' });
 }
 
-function requireAdmin(req, res, next) {
-  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+function requestToken(req) {
+  return req.cookies?.[SESSION_COOKIE] || String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+}
+
+function verifyRequestToken(req) {
+  const token = requestToken(req);
   const secret = process.env.JWT_SECRET || (process.env.NODE_ENV === 'test' ? 'test-only-secret' : null);
 
-  if (!token || !secret) {
-    return res.status(401).json({ message: 'Staff authentication is required' });
-  }
+  if (!token || !secret) return null;
 
   try {
-    const claims = jwt.verify(token, secret);
-    if (claims.role !== 'admin' || !claims.id) {
-      return res.status(403).json({ message: 'Staff access is required' });
-    }
-    req.staff = { id: claims.id, email: claims.email };
-    return next();
+    return jwt.verify(token, secret);
   } catch {
-    return res.status(401).json({ message: 'A valid staff token is required' });
+    return null;
   }
+}
+
+function requireRole(role) {
+  return (req, res, next) => {
+    const claims = verifyRequestToken(req);
+    if (!claims?.id) return res.status(401).json({ message: 'Authentication is required' });
+    if (claims.role !== role) return res.status(403).json({ message: 'Access is not permitted' });
+    req.auth = { id: claims.id, email: claims.email, name: claims.name, role: claims.role };
+    if (role === 'admin') req.staff = req.auth;
+    return next();
+  };
+}
+
+const requireAdmin = requireRole('admin');
+const requireResident = requireRole('resident');
+
+function setSessionCookie(res, claims) {
+  const token = createToken(claims);
+  res.cookie(SESSION_COOKIE, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.SESSION_COOKIE_SAME_SITE || 'lax',
+    maxAge: SESSION_MAX_AGE_MS,
+    path: '/',
+  });
+  return token;
+}
+
+function clearSessionCookie(res) {
+  res.clearCookie(SESSION_COOKIE, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.SESSION_COOKIE_SAME_SITE || 'lax',
+    path: '/',
+  });
 }
 
 function validateIssuePayload(payload) {
@@ -126,8 +175,16 @@ function validateIssuePayload(payload) {
     return 'Request body is required';
   }
 
-  if (!payload.title || !payload.description || !payload.category) {
-    return 'Title, description, and category are required';
+  if (typeof payload.title !== 'string' || !payload.title.trim() || payload.title.length > 160) {
+    return 'Title is required and must be 160 characters or fewer';
+  }
+
+  if (typeof payload.description !== 'string' || !payload.description.trim() || payload.description.length > 5000) {
+    return 'Description is required and must be 5000 characters or fewer';
+  }
+
+  if (typeof payload.category !== 'string' || !DEFAULT_CATEGORIES.includes(payload.category)) {
+    return 'Choose a valid municipal issue category';
   }
 
   if (!payload.location || typeof payload.location !== 'object') {
@@ -136,9 +193,28 @@ function validateIssuePayload(payload) {
 
   if (
     typeof payload.location.latitude !== 'number' ||
-    typeof payload.location.longitude !== 'number'
+    typeof payload.location.longitude !== 'number' ||
+    payload.location.latitude < -35.5 || payload.location.latitude > -22 ||
+    payload.location.longitude < 16 || payload.location.longitude > 33
   ) {
-    return 'Latitude and longitude are required numeric values';
+    return 'Choose a valid location in South Africa';
+  }
+
+  if (!String(payload.location.city || '').trim() || !String(payload.location.municipality || '').trim()) {
+    return 'City and municipality are required';
+  }
+
+  if (payload.priority && !VALID_PRIORITIES.includes(payload.priority)) {
+    return 'Choose a valid priority';
+  }
+
+  if (payload.image) {
+    if (typeof payload.image !== 'string' || payload.image.length > 4_200_000) {
+      return 'Evidence images must be 3 MB or smaller';
+    }
+    if (!/^data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/]+={0,2}$/i.test(payload.image)) {
+      return 'Evidence must be a JPEG, PNG, or WebP image';
+    }
   }
 
   return null;
@@ -173,8 +249,18 @@ function publicReport(report) {
     assignedStaffName,
     department,
     maintenanceTeam,
+    residentId,
+    reportedBy,
+    residentUpdates,
     ...visibleReport
   } = report;
+  if (Array.isArray(residentUpdates)) {
+    visibleReport.residentUpdates = residentUpdates.map((update) => {
+      if (!update || typeof update !== 'object') return update;
+      const { authorId, ...visibleUpdate } = update;
+      return visibleUpdate;
+    });
+  }
   return visibleReport;
 }
 
@@ -193,15 +279,49 @@ function withDuplicateReferences(report, reports) {
   };
 }
 
-app.use(
-  cors({
-    origin: process.env.CLIENT_ORIGIN ? process.env.CLIENT_ORIGIN.split(',') : ['http://localhost:3000'],
-    credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  }),
-);
+app.set('trust proxy', process.env.NODE_ENV === 'production' ? 1 : false);
+app.use(helmet());
+app.use(cookieParser());
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || CLIENT_ORIGINS.includes(origin)) return callback(null, true);
+    return callback(null, false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Protection'],
+}));
 app.use(express.json({ limit: '5mb' }));
+
+const authRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { message: 'Too many authentication attempts. Please try again later.' },
+});
+const reportRateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { message: 'Report limit reached. Please try again later.' },
+});
+app.use([
+  '/api/auth/register',
+  '/api/auth/login',
+  '/api/admin/register',
+  '/api/admin/login',
+], authRateLimiter);
+
+app.use((req, res, next) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || !req.cookies?.[SESSION_COOKIE]) return next();
+  const origin = req.get('origin');
+  if (!origin || !CLIENT_ORIGINS.includes(origin)) {
+    return res.status(403).json({ message: 'A valid same-origin request is required' });
+  }
+  return next();
+});
 
 module.exports = { app, readStore, writeStore, makeId, createToken, requireAdmin };
 
@@ -213,12 +333,54 @@ app.get('/', (req, res) => {
   });
 });
 
-app.get('/api/health', (req, res) => {
-  res.status(200).json({
-    status: 'ok',
-    reportsCount: readStore().reports.length,
-    timestamp: new Date().toISOString(),
-  });
+app.get('/api/health', async (req, res) => {
+  try {
+    const reportsCount = pool ? await getReportCountFromDb() : readStore().reports.length;
+    return res.status(200).json({
+      status: 'ok',
+      reportsCount,
+      timestamp: new Date().toISOString(),
+    });
+  } catch {
+    return res.status(503).json({ status: 'unavailable' });
+  }
+});
+
+app.get('/api/auth/session', async (req, res) => {
+  const claims = verifyRequestToken(req);
+  if (!claims?.id || !['resident', 'admin'].includes(claims.role)) {
+    return res.status(200).json({ user: null });
+  }
+
+  try {
+    let account;
+    if (claims.role === 'resident') {
+      account = pool
+        ? await getResidentByEmail(claims.email)
+        : readStore().users.find((user) => user.id === claims.id);
+    } else {
+      account = pool
+        ? await getStaffByEmail(claims.email)
+        : readStore().admins.find((admin) => admin.id === claims.id);
+    }
+
+    if (!account || account.id !== claims.id) {
+      clearSessionCookie(res);
+      return res.status(200).json({ user: null });
+    }
+
+    return res.status(200).json({
+      user: { id: account.id, name: account.name, email: account.email, role: claims.role },
+    });
+  } catch (error) {
+    console.error('Session lookup failed:', error);
+    return res.status(503).json({ message: 'Unable to verify the current session' });
+  }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  clearSessionCookie(res);
+  return res.status(200).json({ message: 'Signed out' });
 });
 
 app.get('/api/reports', async (req, res) => {
@@ -275,6 +437,22 @@ app.get('/api/reports', async (req, res) => {
   return res.status(200).json({ reports: reports.map((report) => withDuplicateReferences(report, store.reports)) });
 });
 
+app.get('/api/my/reports', requireResident, async (req, res) => {
+  if (pool) {
+    try {
+      const reports = await getReportsFromDb({ residentId: req.auth.id });
+      return res.status(200).json({ reports });
+    } catch (error) {
+      console.error('Resident report fetch failed:', error);
+      return res.status(503).json({ message: 'Unable to load your reports right now' });
+    }
+  }
+
+  const store = readStore();
+  const reports = store.reports.filter((report) => report.residentId === req.auth.id);
+  return res.status(200).json({ reports });
+});
+
 app.get('/api/admin/reports', requireAdmin, async (req, res) => {
   try {
     const reports = pool ? await getReportsFromDb() : readStore().reports;
@@ -298,9 +476,16 @@ app.get('/api/admin/reports/:id', requireAdmin, async (req, res) => {
   }
 });
 
-app.get('/api/admin/staff', requireAdmin, (req, res) => {
-  const staff = readStore().admins.map(({ id, name, email }) => ({ id, name, email }));
-  return res.status(200).json({ staff });
+app.get('/api/admin/staff', requireAdmin, async (req, res) => {
+  try {
+    const staff = pool
+      ? await getStaffDirectoryFromDb()
+      : readStore().admins.map(({ id, name, email }) => ({ id, name, email }));
+    return res.status(200).json({ staff });
+  } catch (error) {
+    console.error('Staff directory fetch failed:', error);
+    return res.status(503).json({ message: 'Unable to load staff directory' });
+  }
 });
 
 app.get('/api/categories', async (req, res) => {
@@ -360,7 +545,7 @@ app.get('/api/reports/:id', async (req, res) => {
   return res.status(200).json({ report: withDuplicateReferences(report, store.reports) });
 });
 
-app.post('/api/reports', async (req, res) => {
+app.post('/api/reports', reportRateLimiter, requireResident, async (req, res) => {
   const validationError = validateIssuePayload(req.body);
 
   if (validationError) {
@@ -375,14 +560,14 @@ app.post('/api/reports', async (req, res) => {
         description: req.body.description,
         location: req.body.location,
         priority: req.body.priority,
-        status: req.body.status,
-        reportedBy: req.body.reportedBy,
+        reportedBy: req.auth.name,
+        residentId: req.auth.id,
         image: req.body.image,
       });
 
       return res.status(201).json({
         message: 'Report created successfully',
-        report,
+        report: publicReport(report),
       });
     } catch (error) {
       console.error('Database report creation failed:', error);
@@ -404,8 +589,9 @@ app.post('/api/reports', async (req, res) => {
       municipality: req.body.location.municipality || '',
     },
     priority: req.body.priority || 'Medium',
-    status: req.body.status || 'Reported',
-    reportedBy: req.body.reportedBy || 'Resident',
+    status: 'Reported',
+    reportedBy: req.auth.name,
+    residentId: req.auth.id,
     reportedAt: new Date().toISOString(),
     image: req.body.image || undefined,
   };
@@ -415,7 +601,7 @@ app.post('/api/reports', async (req, res) => {
 
   return res.status(201).json({
     message: 'Report created successfully',
-    report: newReport,
+    report: publicReport(newReport),
   });
 });
 
@@ -501,7 +687,9 @@ app.patch('/api/reports/:id/triage', requireAdmin, async (req, res) => {
         updates.assignedStaffId = undefined;
         updates.assignedStaffName = undefined;
       } else {
-        const assignee = readStore().admins.find((entry) => entry.id === payload.assignedStaffId);
+        const assignee = pool
+          ? await getStaffByIdFromDb(payload.assignedStaffId)
+          : readStore().admins.find((entry) => entry.id === payload.assignedStaffId);
         if (!assignee) return res.status(400).json({ message: 'Assigned staff member was not found' });
         updates.assignedStaffId = assignee.id;
         updates.assignedStaffName = assignee.name;
@@ -616,71 +804,98 @@ app.delete('/api/reports/:id', requireAdmin, async (req, res) => {
   return res.status(200).json({ message: 'Report deleted successfully' });
 });
 
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', async (req, res) => {
   const { name, email, password } = req.body || {};
 
   if (!name || !email || !password) {
     return res.status(400).json({ message: 'Name, email, and password are required' });
   }
 
-  const store = readStore();
-  const existingUser = store.users.find((user) => user.email.toLowerCase() === email.toLowerCase());
-
-  if (existingUser) {
-    return res.status(409).json({ message: 'User already exists' });
+  const normalizedName = String(name).trim();
+  const normalizedEmail = String(email).trim().toLowerCase();
+  if (normalizedName.length < 2 || normalizedName.length > 120 || !/^\S+@\S+\.\S+$/.test(normalizedEmail)) {
+    return res.status(400).json({ message: 'Enter a valid name and email address' });
+  }
+  if (String(password).length < 12 || String(password).length > 128) {
+    return res.status(400).json({ message: 'Password must be between 12 and 128 characters' });
   }
 
   const user = {
     id: makeId('USR'),
-    name,
-    email,
+    name: normalizedName,
+    email: normalizedEmail,
     password: hashPassword(password),
+    phone: String(req.body.phone || '').trim(),
     createdAt: new Date().toISOString(),
   };
 
-  store.users.push(user);
-  writeStore(store);
+  try {
+    if (pool) {
+      await createResidentInDb(user);
+    } else {
+      const store = readStore();
+      if (store.users.some((account) => account.email.toLowerCase() === normalizedEmail)) {
+        return res.status(409).json({ message: 'User already exists' });
+      }
+      store.users.push(user);
+      writeStore(store);
+    }
 
-  const token = createToken({ id: user.id, email: user.email, role: 'resident' });
-
-  return res.status(201).json({
-    message: 'Resident registered successfully',
-    user: { id: user.id, name: user.name, email: user.email },
-    token,
-  });
+    setSessionCookie(res, { id: user.id, name: user.name, email: user.email, role: 'resident' });
+    return res.status(201).json({
+      message: 'Resident registered successfully',
+      user: { id: user.id, name: user.name, email: user.email, role: 'resident' },
+    });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ message: 'User already exists' });
+    console.error('Resident registration failed:', error);
+    return res.status(500).json({ message: 'Resident registration failed' });
+  }
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body || {};
 
   if (!email || !password) {
     return res.status(400).json({ message: 'Email and password are required' });
   }
 
-  const store = readStore();
-  const user = store.users.find(
-    (record) => record.email.toLowerCase() === email.toLowerCase() && verifyPassword(password, record.password),
-  );
+  let user;
+  try {
+    const normalizedEmail = String(email).trim().toLowerCase();
+    user = pool
+      ? await getResidentByEmail(normalizedEmail)
+      : readStore().users.find((record) => record.email.toLowerCase() === normalizedEmail);
+  } catch (error) {
+    console.error('Resident login lookup failed:', error);
+    return res.status(503).json({ message: 'Resident sign-in is temporarily unavailable' });
+  }
 
-  if (!user) {
+  if (!user || !verifyPassword(password, user.password)) {
     return res.status(401).json({ message: 'Invalid email or password' });
   }
 
   if (!String(user.password).startsWith('scrypt:')) {
-    user.password = hashPassword(password);
-    writeStore(store);
+    if (pool) {
+      return res.status(401).json({ message: 'This account must reset its password before signing in' });
+    }
+    const store = readStore();
+    const storedUser = store.users.find((record) => record.id === user.id);
+    if (storedUser) {
+      storedUser.password = hashPassword(password);
+      writeStore(store);
+      user.password = storedUser.password;
+    }
   }
 
-  const token = createToken({ id: user.id, email: user.email, role: 'resident' });
-
+  setSessionCookie(res, { id: user.id, name: user.name, email: user.email, role: 'resident' });
   return res.status(200).json({
     message: 'Resident login successful',
-    user: { id: user.id, name: user.name, email: user.email },
-    token,
+    user: { id: user.id, name: user.name, email: user.email, role: 'resident' },
   });
 });
 
-app.post('/api/admin/register', (req, res) => {
+app.post('/api/admin/register', async (req, res) => {
   const { name, email, password, registrationKey } = req.body || {};
 
   const registrationKeys = [process.env.ADMIN_REGISTRATION_KEYS, process.env.ADMIN_REGISTRATION_KEY]
@@ -702,60 +917,85 @@ app.post('/api/admin/register', (req, res) => {
     return res.status(400).json({ message: 'Name, email, and password are required' });
   }
 
-  const store = readStore();
-  const existingAdmin = store.admins.find((admin) => admin.email.toLowerCase() === email.toLowerCase());
-
-  if (existingAdmin) {
-    return res.status(409).json({ message: 'Admin already exists' });
+  const normalizedName = String(name).trim();
+  const normalizedEmail = String(email).trim().toLowerCase();
+  if (normalizedName.length < 2 || normalizedName.length > 120 || !/^\S+@\S+\.\S+$/.test(normalizedEmail)) {
+    return res.status(400).json({ message: 'Enter a valid name and email address' });
+  }
+  if (String(password).length < 12 || String(password).length > 128) {
+    return res.status(400).json({ message: 'Password must be between 12 and 128 characters' });
   }
 
   const admin = {
     id: makeId('ADM'),
-    name,
-    email,
+    name: normalizedName,
+    email: normalizedEmail,
     password: hashPassword(password),
     createdAt: new Date().toISOString(),
   };
 
-  store.admins.push(admin);
-  writeStore(store);
+  try {
+    if (pool) {
+      await createStaffInDb(admin);
+    } else {
+      const store = readStore();
+      if (store.admins.some((account) => account.email.toLowerCase() === admin.email)) {
+        return res.status(409).json({ message: 'Admin already exists' });
+      }
+      store.admins.push(admin);
+      writeStore(store);
+    }
 
-  const token = createToken({ id: admin.id, email: admin.email, role: 'admin' });
-
-  return res.status(201).json({
-    message: 'Admin registered successfully',
-    admin: { id: admin.id, name: admin.name, email: admin.email },
-    token,
-  });
+    setSessionCookie(res, { id: admin.id, name: admin.name, email: admin.email, role: 'admin' });
+    return res.status(201).json({
+      message: 'Admin registered successfully',
+      admin: { id: admin.id, name: admin.name, email: admin.email, role: 'admin' },
+    });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ message: 'Admin already exists' });
+    console.error('Staff registration failed:', error);
+    return res.status(500).json({ message: 'Staff registration failed' });
+  }
 });
 
-app.post('/api/admin/login', (req, res) => {
+app.post('/api/admin/login', async (req, res) => {
   const { email, password } = req.body || {};
 
   if (!email || !password) {
     return res.status(400).json({ message: 'Email and password are required' });
   }
 
-  const store = readStore();
-  const admin = store.admins.find(
-    (record) => record.email.toLowerCase() === email.toLowerCase() && verifyPassword(password, record.password),
-  );
+  let admin;
+  try {
+    const normalizedEmail = String(email).trim().toLowerCase();
+    admin = pool
+      ? await getStaffByEmail(normalizedEmail)
+      : readStore().admins.find((record) => record.email.toLowerCase() === normalizedEmail);
+  } catch (error) {
+    console.error('Staff login lookup failed:', error);
+    return res.status(503).json({ message: 'Staff sign-in is temporarily unavailable' });
+  }
 
-  if (!admin) {
+  if (!admin || !verifyPassword(password, admin.password)) {
     return res.status(401).json({ message: 'Invalid email or password' });
   }
 
   if (!String(admin.password).startsWith('scrypt:')) {
-    admin.password = hashPassword(password);
-    writeStore(store);
+    if (pool) return res.status(401).json({ message: 'This account must reset its password before signing in' });
+    const store = readStore();
+    const storedAdmin = store.admins.find((record) => record.id === admin.id);
+    if (storedAdmin) {
+      storedAdmin.password = hashPassword(password);
+      writeStore(store);
+      admin.password = storedAdmin.password;
+    }
   }
 
-  const token = createToken({ id: admin.id, email: admin.email, role: 'admin' });
+  setSessionCookie(res, { id: admin.id, name: admin.name, email: admin.email, role: 'admin' });
 
   return res.status(200).json({
     message: 'Admin login successful',
-    admin: { id: admin.id, name: admin.name, email: admin.email },
-    token,
+    admin: { id: admin.id, name: admin.name, email: admin.email, role: 'admin' },
   });
 });
 
@@ -765,6 +1005,10 @@ app.use((error, req, res, next) => {
 });
 
 if (require.main === module) {
+  if (process.env.NODE_ENV === 'production' && !pool) {
+    console.error('DATABASE_URL is required in production; refusing to start with file storage.');
+    process.exitCode = 1;
+  } else {
   initDatabase()
     .then(() => {
       app.listen(PORT, () => {
@@ -775,9 +1019,13 @@ if (require.main === module) {
     })
     .catch((error) => {
       console.error('Database initialization failed:', error);
+      if (process.env.NODE_ENV === 'production') {
+        process.exit(1);
+      }
       app.listen(PORT, () => {
         console.log(`Municipal Service Server listening on port ${PORT}`);
         console.log(`Store path: ${STORE_PATH}`);
       });
     });
+  }
 }

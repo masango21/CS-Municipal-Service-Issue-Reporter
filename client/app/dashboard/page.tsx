@@ -2,18 +2,58 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { IssueCard } from "@/components/IssueCard";
 import { ReportMap } from "@/components/ReportMap";
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import { useReports } from "@/context/ReportsContext";
+import type { Issue } from "@/types/issue";
+
+const emptyReports: Issue[] = [];
 
 export default function ResidentDashboardPage() {
   const router = useRouter();
   const { residentUser, adminUser, isAuthReady } = useAuth();
-  const { reports, stats } = useReports();
+  const { fetchMyReports } = useReports();
   const { t } = useLanguage();
+  const [residentData, setResidentData] = useState<{
+    ownerId: string;
+    reports: Issue[];
+    error: string;
+  } | null>(null);
+  const residentId = residentUser?.id;
+
+  useEffect(() => {
+    if (!residentId) return;
+    let active = true;
+    fetchMyReports()
+      .then((myReports) => {
+        if (!active) return;
+        setResidentData({ ownerId: residentId, reports: myReports, error: "" });
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setResidentData({
+          ownerId: residentId,
+          reports: [],
+          error: error instanceof Error ? error.message : "Unable to load your reports.",
+        });
+      });
+    return () => { active = false; };
+  }, [fetchMyReports, residentId]);
+
+  const hasResidentData = Boolean(residentId && residentData?.ownerId === residentId);
+  const reports = hasResidentData ? residentData!.reports : emptyReports;
+  const reportsReady = hasResidentData;
+  const reportsError = hasResidentData ? residentData!.error : "";
+
+  const stats = useMemo(() => ({
+    total: reports.length,
+    reported: reports.filter((report) => report.status === "Reported").length,
+    inProgress: reports.filter((report) => ["Under Review", "Assigned", "In Progress"].includes(report.status)).length,
+    resolved: reports.filter((report) => report.status === "Resolved").length,
+  }), [reports]);
 
   useEffect(() => {
     if (!isAuthReady || residentUser) return;
@@ -67,11 +107,15 @@ export default function ResidentDashboardPage() {
           </div>
         </div>
 
+        {reportsError && <p role="alert" className="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{reportsError}</p>}
+
         <div className="grid gap-8 lg:grid-cols-[1.3fr_0.7fr]">
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
               <h2 className="mb-4 text-xl font-bold text-slate-900">{t("yourIssueLocations")}</h2>
-              {reports.length > 0 ? (
+              {!reportsReady && !reportsError ? (
+                <p role="status" className="p-8 text-center text-sm text-slate-500">Loading your reports...</p>
+              ) : reports.length > 0 ? (
                 <ReportMap issues={reports} compact />
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
@@ -85,7 +129,9 @@ export default function ResidentDashboardPage() {
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <h2 className="text-xl font-bold text-slate-900">{t("recentReports")}</h2>
             <div className="mt-5 space-y-4">
-              {reports.length > 0 ? (
+              {!reportsReady && !reportsError ? (
+                <p role="status" className="mt-5 text-sm text-slate-500">Loading your reports...</p>
+              ) : reports.length > 0 ? (
                 reports.slice(0, 3).map((issue) => <IssueCard key={issue.id} issue={issue} />)
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center">

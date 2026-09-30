@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { issueCategories } from "@/data/issueCategories";
@@ -42,10 +43,20 @@ export default function ReportIssuePage() {
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    setError("");
 
     if (!file) {
       setImage("");
       setImageName("");
+      return;
+    }
+
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+    if (!allowedTypes.includes(file.type) || file.size > 3 * 1024 * 1024) {
+      setImage("");
+      setImageName("");
+      event.target.value = "";
+      setError("Choose a JPEG, PNG, or WebP image no larger than 3 MB.");
       return;
     }
 
@@ -99,7 +110,7 @@ export default function ReportIssuePage() {
       const newReport = await addReport(draft);
       router.push(`/issues/${newReport.id}`);
     } catch {
-      setError("Your report could not be opened. Please try again.");
+      setError("Your report could not be saved. Check your connection and try again.");
       setIsSubmitting(false);
     }
   };
@@ -214,7 +225,7 @@ export default function ReportIssuePage() {
                 <input
                   id="photo"
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   onChange={handleFileUpload}
                   className="block w-full text-sm text-slate-600 file:mr-4 file:rounded-full file:border-0 file:bg-emerald-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-emerald-700"
                 />
@@ -226,7 +237,7 @@ export default function ReportIssuePage() {
                 )}
                 {image && (
                   <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white">
-                    <img src={image} alt="Issue evidence preview" className="h-48 w-full object-cover" />
+                    <Image src={image} alt="Issue evidence preview" width={800} height={400} unoptimized className="h-48 w-full object-cover" />
                   </div>
                 )}
               </div>

@@ -23,7 +23,7 @@ export default function ResidentRegisterPage() {
     }
   }, [currentUser, router]);
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     if (password !== confirmPassword) {
@@ -31,7 +31,7 @@ export default function ResidentRegisterPage() {
       return;
     }
 
-    const result = registerResident({ name: fullName, email, password, phone });
+    const result = await registerResident({ name: fullName, email, password, phone });
 
     if (!result.ok) {
       setError(result.message);
@@ -102,6 +102,7 @@ export default function ResidentRegisterPage() {
               <input
                 id="password"
                 type="password"
+                minLength={12}
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"

@@ -1,4 +1,6 @@
 const { Pool } = require('pg');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 const hasDatabaseUrl = Boolean(
@@ -7,11 +9,17 @@ const hasDatabaseUrl = Boolean(
     !process.env.DATABASE_URL.includes('username:password@host'),
 );
 const useFileStore = process.env.USE_FILE_STORE === 'true' || process.env.NODE_ENV === 'test';
+const databaseUrl = hasDatabaseUrl ? new URL(process.env.DATABASE_URL) : null;
+
+if (databaseUrl) {
+  databaseUrl.searchParams.delete('sslmode');
+  databaseUrl.searchParams.delete('channel_binding');
+}
 
 const pool = !useFileStore && hasDatabaseUrl
   ? new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+      connectionString: databaseUrl.toString(),
+      ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: true },
     })
   : null;
 
@@ -35,38 +43,42 @@ async function initDatabase() {
   }
 
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS issue_categories (
-      id SERIAL PRIMARY KEY,
-      slug VARCHAR(120) UNIQUE NOT NULL,
-      name VARCHAR(120) NOT NULL,
-      description TEXT,
-      created_at TIMESTAMPTZ DEFAULT NOW()
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS issues (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      title TEXT NOT NULL,
-      description TEXT NOT NULL,
-      city TEXT,
-      municipality TEXT,
-      latitude DOUBLE PRECISION NOT NULL,
-      longitude DOUBLE PRECISION NOT NULL,
-      status VARCHAR(50) NOT NULL DEFAULT 'Reported',
-      priority VARCHAR(30) NOT NULL DEFAULT 'Medium',
-      reported_by TEXT NOT NULL DEFAULT 'Resident',
-      evidence_image TEXT,
-      category_id INTEGER REFERENCES issue_categories(id),
-      category_name TEXT,
-      operations JSONB NOT NULL DEFAULT '{}'::jsonb,
-      reported_at TIMESTAMPTZ DEFAULT NOW(),
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    );
-  `);
+  const client = await pool.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock(19791104);');
+    const migrationDirectory = path.join(__dirname, 'sql', 'migrations');
+    const migrationFiles = fs.readdirSync(migrationDirectory)
+      .filter((file) => /^\d+_[a-z0-9_-]+\.sql$/i.test(file))
+      .sort();
 
-  await pool.query(`ALTER TABLE issues ADD COLUMN IF NOT EXISTS operations JSONB NOT NULL DEFAULT '{}'::jsonb;`);
+    for (const version of migrationFiles) {
+      const existing = await client.query('SELECT 1 FROM schema_migrations WHERE version = $1;', [version]);
+      if (existing.rowCount) continue;
+
+      await client.query('BEGIN;');
+      try {
+        const migration = fs.readFileSync(path.join(migrationDirectory, version), 'utf8');
+        await client.query(migration);
+        await client.query('INSERT INTO schema_migrations (version) VALUES ($1);', [version]);
+        await client.query('COMMIT;');
+      } catch (error) {
+        await client.query('ROLLBACK;');
+        throw error;
+      }
+    }
+  } finally {
+    try {
+      await client.query('SELECT pg_advisory_unlock(19791104);');
+    } finally {
+      client.release();
+    }
+  }
 
   for (const name of DEFAULT_CATEGORIES) {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -96,6 +108,69 @@ async function getCategoriesFromDb() {
   return result.rows;
 }
 
+async function getReportCountFromDb() {
+  if (!pool) return 0;
+  const result = await pool.query('SELECT COUNT(*)::INTEGER AS count FROM issues;');
+  return result.rows[0].count;
+}
+
+async function getResidentByEmail(email) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `SELECT id, name, email, password_hash AS password, phone, created_at AS "createdAt"
+     FROM resident_users WHERE LOWER(email) = LOWER($1) LIMIT 1;`,
+    [email],
+  );
+  return result.rows[0] || null;
+}
+
+async function createResidentInDb(user) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `INSERT INTO resident_users (id, name, email, password_hash, phone)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, name, email, password_hash AS password, phone, created_at AS "createdAt";`,
+    [user.id, user.name, user.email, user.password, user.phone || null],
+  );
+  return result.rows[0];
+}
+
+async function getStaffByEmail(email) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `SELECT id, name, email, password_hash AS password, created_at AS "createdAt"
+     FROM staff_users WHERE LOWER(email) = LOWER($1) LIMIT 1;`,
+    [email],
+  );
+  return result.rows[0] || null;
+}
+
+async function getStaffByIdFromDb(staffId, queryPool = pool) {
+  if (!queryPool) return null;
+  const result = await queryPool.query(
+    `SELECT id, name, email FROM staff_users WHERE id = $1 LIMIT 1;`,
+    [staffId],
+  );
+  return result.rows[0] || null;
+}
+
+async function createStaffInDb(staff) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `INSERT INTO staff_users (id, name, email, password_hash)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id, name, email, password_hash AS password, created_at AS "createdAt";`,
+    [staff.id, staff.name, staff.email, staff.password],
+  );
+  return result.rows[0];
+}
+
+async function getStaffDirectoryFromDb() {
+  if (!pool) return [];
+  const result = await pool.query('SELECT id, name, email FROM staff_users ORDER BY name ASC;');
+  return result.rows;
+}
+
 function normalizeReportRow(row) {
   return {
     id: row.id,
@@ -112,6 +187,7 @@ function normalizeReportRow(row) {
     priority: row.priority || 'Medium',
     status: row.status || 'Reported',
     reportedBy: row.reported_by || 'Resident',
+    residentId: row.resident_id || undefined,
     reportedAt: row.reported_at || row.created_at,
     image: row.evidence_image || undefined,
     ...(row.operations && typeof row.operations === 'object' ? row.operations : {}),
@@ -123,7 +199,7 @@ async function getReportsFromDb(query = {}) {
     return [];
   }
 
-  const { category, status, search } = query;
+  const { category, status, search, residentId } = query;
   let sql = `
     SELECT i.*, c.name AS category, c.slug AS category_slug
     FROM issues i
@@ -142,6 +218,12 @@ async function getReportsFromDb(query = {}) {
   if (status) {
     sql += ` AND LOWER(i.status) = $${i}`;
     params.push(String(status).trim().toLowerCase());
+    i += 1;
+  }
+
+  if (residentId) {
+    sql += ` AND i.resident_id = $${i}`;
+    params.push(String(residentId));
     i += 1;
   }
 
@@ -195,9 +277,10 @@ async function createReportInDb(payload) {
         evidence_image,
         category_id,
         category_name,
+        resident_id,
         reported_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
       RETURNING *;
     `,
     [
@@ -213,6 +296,7 @@ async function createReportInDb(payload) {
       payload.image || null,
       categoryId,
       categoryName,
+      payload.residentId || null,
     ],
   );
 
@@ -295,6 +379,13 @@ async function deleteReportInDb(reportId) {
 module.exports = {
   pool,
   initDatabase,
+  getReportCountFromDb,
+  getResidentByEmail,
+  createResidentInDb,
+  getStaffByEmail,
+  getStaffByIdFromDb,
+  createStaffInDb,
+  getStaffDirectoryFromDb,
   getCategoriesFromDb,
   getReportsFromDb,
   createReportInDb,

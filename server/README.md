@@ -5,23 +5,29 @@
 Install dependencies and start the API from this directory:
 
 ```powershell
-npm install
+npm ci
+Copy-Item .env.example .env
 npm start
 ```
 
 The default API address is `http://localhost:4000`.
 
-## Required configuration
+## Configuration
 
-Copy `.env.example` to `.env` and set:
+Set these values in ignored `.env` for local development or in the hosting provider's secret manager:
 
-- `JWT_SECRET`: a high-entropy secret used to sign staff access tokens.
-- `ADMIN_REGISTRATION_KEYS`: comma-separated out-of-band invite keys required to create staff accounts; the legacy singular `ADMIN_REGISTRATION_KEY` remains supported.
-- `DATABASE_URL`: optional PostgreSQL connection string; without it, the JSON file store is used.
+- `JWT_SECRET`: high-entropy signing secret. Rotate before public launch.
+- `ADMIN_REGISTRATION_KEYS`: comma-separated staff invite keys. Rotate before public launch.
+- `DATABASE_URL`: PostgreSQL connection string. Required in production; optional only for local file-store development.
+- `DATABASE_SSL`: defaults to certificate-verified TLS. Set `false` only for a trusted local PostgreSQL instance.
+- `CLIENT_ORIGIN`: exact frontend origin, including scheme.
+- `SESSION_COOKIE_SAME_SITE`: defaults to `lax`; use frontend/API custom domains under the same registrable domain.
 
-Never commit environment files. Staff invite keys may be placed in the ignored `server/.env.staff-invites` file as `ADMIN_REGISTRATION_KEYS=key-one,key-two`; the server loads it at startup. Registration returns `503` until at least one key is configured. Provide invite keys only to authorized municipal staff. Passwords created through the API are stored as salted scrypt hashes; legacy plaintext records are upgraded after a successful login.
+Never commit environment files. Production refuses to start without PostgreSQL. Versioned migrations under `sql/migrations/` are applied transactionally at startup; validate them on a disposable PostgreSQL branch before any production migration. Resident and staff passwords are stored as salted scrypt hashes. Browser sessions use HttpOnly cookies; authentication endpoints are rate-limited.
 
-Staff report mutations require `Authorization: Bearer <staff-token>`. Staff notes are returned only from authenticated `/api/admin/reports/:id`; public report responses intentionally omit notes.
+Residents must sign in to submit reports. `/api/my/reports` returns only the signed-in resident's reports. Public responses omit reporter identity and staff-only notes/assignment fields. Destructive operations require staff authorization, and cookie-authenticated writes require an allowed `Origin`.
+
+Evidence accepts JPEG, PNG, or WebP files up to 3 MB. The current implementation stores encoded evidence in PostgreSQL; move it to durable object storage before broad public use.
 
 ## Tests
 
@@ -29,4 +35,4 @@ Staff report mutations require `Authorization: Bearer <staff-token>`. Staff note
 npm test
 ```
 
-Tests use the file-store mode and reset their reports, accounts, and staff records after each test. No sample reports or pins are part of normal startup.
+Tests use an automatically created temporary file store and remove it after the suite. They do not reset or modify `server/data/store.json`. No sample reports or pins are part of normal startup.

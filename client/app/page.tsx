@@ -11,7 +11,7 @@ import { useReports } from "@/context/ReportsContext";
 export default function HomePage() {
   const router = useRouter();
   const { residentUser, adminUser } = useAuth();
-  const { reports, stats } = useReports();
+  const { reports, stats, isReportsReady, reportsError } = useReports();
   const { t } = useLanguage();
 
   useEffect(() => {
@@ -66,18 +66,20 @@ export default function HomePage() {
               </div>
             )}
 
+            {reportsError && <p role="alert" className="mt-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{reportsError}</p>}
+
             <div className="mt-8 grid gap-4 sm:grid-cols-3">
               <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
                 <p className="text-sm text-slate-500">{t("totalReports")}</p>
-                <p className="mt-2 text-3xl font-bold text-slate-900">{stats.total}</p>
+                <p className="mt-2 text-3xl font-bold text-slate-900">{reportsError ? "—" : isReportsReady ? stats.total : "…"}</p>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
                 <p className="text-sm text-slate-500">{t("inProgress")}</p>
-                <p className="mt-2 text-3xl font-bold text-slate-900">{stats.inProgress}</p>
+                <p className="mt-2 text-3xl font-bold text-slate-900">{reportsError ? "—" : isReportsReady ? stats.inProgress : "…"}</p>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
                 <p className="text-sm text-slate-500">{t("resolved")}</p>
-                <p className="mt-2 text-3xl font-bold text-slate-900">{stats.resolved}</p>
+                <p className="mt-2 text-3xl font-bold text-slate-900">{reportsError ? "—" : isReportsReady ? stats.resolved : "…"}</p>
               </div>
             </div>
           </div>
@@ -88,13 +90,13 @@ export default function HomePage() {
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-400">{t("liveStatus")}</p>
                 <h2 className="mt-2 text-2xl font-bold">{t("mapTitle")}</h2>
               </div>
-              <span className="rounded-full bg-emerald-500/20 px-2.5 py-1 text-xs font-semibold text-emerald-300">
-                {stats.total} {t("totalReports").toLowerCase()}
-              </span>
+              {!reportsError && <span className="rounded-full bg-emerald-500/20 px-2.5 py-1 text-xs font-semibold text-emerald-300">
+                {isReportsReady ? stats.total : "…"} {t("totalReports").toLowerCase()}
+              </span>}
             </div>
 
             <div className="mt-6">
-              <ReportMap issues={reports} compact emptyMessage={t("mapEmpty")} />
+              {reportsError ? <p role="alert" className="p-8 text-center text-sm text-rose-200">Live issue data is temporarily unavailable.</p> : <ReportMap issues={reports} compact emptyMessage={t("mapEmpty")} />}
             </div>
 
             <div className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">

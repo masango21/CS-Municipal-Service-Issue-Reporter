@@ -1,0 +1,16 @@
+{
+  "name": "municipal-service-issue-reporter",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail \"npm run dev:server\" \"npm run dev:client\"",
+    "build": "npm --prefix client run build",
+    "lint": "npm --prefix client run lint",
+    "dev:server": "npm --prefix server start",
+    "dev:client": "npm --prefix client run dev -- --port 3000",
+    "build:client": "npm --prefix client run build",
+    "lint:client": "npm --prefix client run lint"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

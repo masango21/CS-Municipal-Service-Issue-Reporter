@@ -1,15 +1,40 @@
-process.env.USE_FILE_STORE = 'true';
-process.env.ADMIN_REGISTRATION_KEYS = 'staff-invite-test-key,second-staff-invite-test-key';
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { test, beforeEach, afterEach, after } = require('node:test');
 
-const { test, beforeEach, afterEach } = require('node:test');
+process.env.USE_FILE_STORE = 'true';
+process.env.NODE_ENV = 'test';
+process.env.ADMIN_REGISTRATION_KEYS = 'staff-invite-test-key,second-staff-invite-test-key';
+const testStoreDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'municipal-service-api-test-'));
+process.env.DATA_STORE_PATH = path.join(testStoreDirectory, 'store.json');
 const assert = require('node:assert/strict');
+const { getStaffByIdFromDb } = require('../db');
 
 const { app, readStore, writeStore, createToken } = require('../index.js');
 const staffAuthorization = `Bearer ${createToken({ id: 'staff-1', email: 'staff@example.test', role: 'admin' })}`;
+const residentAuthorization = `Bearer ${createToken({ id: 'resident-1', name: 'Test Resident', email: 'resident@example.test', role: 'resident' })}`;
 
 function resetStore() {
   writeStore({ reports: [], users: [], admins: [] });
 }
+
+test('PostgreSQL staff lookup selects one staff member by ID without credentials', async () => {
+  let queryText = '';
+  let queryParams = [];
+  const staff = await getStaffByIdFromDb('staff-1', {
+    query: async (text, params) => {
+      queryText = text;
+      queryParams = params;
+      return { rows: [{ id: 'staff-1', name: 'Operations Staff', email: 'staff@example.test' }] };
+    },
+  });
+
+  assert.match(queryText, /FROM staff_users WHERE id = \$1/i);
+  assert.doesNotMatch(queryText, /password_hash/i);
+  assert.deepEqual(queryParams, ['staff-1']);
+  assert.deepEqual(staff, { id: 'staff-1', name: 'Operations Staff', email: 'staff@example.test' });
+});
 
 beforeEach(() => {
   resetStore();
@@ -17,6 +42,10 @@ beforeEach(() => {
 
 afterEach(() => {
   resetStore();
+});
+
+after(() => {
+  fs.rmSync(testStoreDirectory, { recursive: true, force: true });
 });
 
 async function request(path, options = {}) {
@@ -36,6 +65,7 @@ async function request(path, options = {}) {
     return {
       status: response.status,
       body: body ? JSON.parse(body) : null,
+      headers: response.headers,
     };
   } finally {
     await new Promise((resolve, reject) => {
@@ -82,9 +112,16 @@ test('staff registration requires the configured invite key and stores a passwor
     }));
   }
   assert.deepEqual(registered.map((response) => response.status), [201, 201]);
-  assert.ok(registered.every((response) => response.body.token));
-  assert.equal(registered[0].body.admin.role, undefined);
+  assert.ok(registered.every((response) => response.headers.get('set-cookie')?.includes('HttpOnly')));
+  assert.ok(registered.every((response) => !response.body.token));
+  assert.equal(registered[0].body.admin.role, 'admin');
   assert.ok(readStore().admins.every((admin) => /^scrypt:/.test(admin.password)));
+
+  const staffCookie = registered[0].headers.get('set-cookie').split(';', 1)[0];
+  const staffReports = await request('/api/admin/reports', {
+    headers: { Cookie: staffCookie },
+  });
+  assert.equal(staffReports.status, 200);
 
   const login = await request('/api/admin/login', {
     method: 'POST',
@@ -92,7 +129,110 @@ test('staff registration requires the configured invite key and stores a passwor
     body: JSON.stringify({ email: 'staff-0@example.test', password: payload.password }),
   });
   assert.equal(login.status, 200);
-  assert.ok(login.body.token);
+  assert.ok(login.headers.get('set-cookie')?.includes('HttpOnly'));
+  assert.equal(login.body.token, undefined);
+});
+
+test('resident accounts use hashed passwords and cookie-based sessions', async () => {
+  const account = {
+    name: 'Test Resident',
+    email: 'resident@example.test',
+    password: 'resident-test-password',
+    phone: '5550100',
+  };
+  const registration = await request('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(account),
+  });
+
+  assert.equal(registration.status, 201);
+  assert.ok(registration.headers.get('set-cookie')?.includes('HttpOnly'));
+  assert.equal(registration.body.token, undefined);
+  assert.ok(/^scrypt:/.test(readStore().users[0].password));
+
+  const sessionCookie = registration.headers.get('set-cookie').split(';', 1)[0];
+  const session = await request('/api/auth/session', { headers: { Cookie: sessionCookie } });
+  assert.equal(session.status, 200);
+  assert.equal(session.body.user.role, 'resident');
+  assert.equal(session.body.user.email, account.email);
+
+  const createdReport = await request('/api/reports', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Cookie: sessionCookie,
+      Origin: 'http://localhost:3000',
+    },
+    body: JSON.stringify({
+      title: 'Resident-owned report',
+      description: 'A test report attached to the authenticated resident.',
+      category: 'Pothole',
+      location: { latitude: -25.7, longitude: 28.2, city: 'Pretoria', municipality: 'City of Tshwane' },
+      reportedBy: 'Spoofed client name',
+      residentId: 'spoofed-owner',
+    }),
+  });
+  assert.equal(createdReport.status, 201);
+  assert.equal(createdReport.body.report.reportedBy, undefined);
+  assert.equal(Object.hasOwn(createdReport.body.report, 'residentId'), false);
+
+  const secondRegistration = await request('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Second Resident',
+      email: 'second-resident@example.test',
+      password: 'second-resident-password',
+    }),
+  });
+  assert.equal(secondRegistration.status, 201);
+  const secondCookie = secondRegistration.headers.get('set-cookie').split(';', 1)[0];
+  const secondReport = await request('/api/reports', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Cookie: secondCookie,
+      Origin: 'http://localhost:3000',
+    },
+    body: JSON.stringify({
+      title: 'Second resident report',
+      description: 'This report must not appear in another resident account.',
+      category: 'Water Leak',
+      location: { latitude: -26.2, longitude: 28.0, city: 'Johannesburg', municipality: 'City of Johannesburg' },
+    }),
+  });
+  assert.equal(secondReport.status, 201);
+
+  const ownReports = await request('/api/my/reports', { headers: { Cookie: sessionCookie } });
+  assert.equal(ownReports.status, 200);
+  assert.equal(ownReports.body.reports.length, 1);
+  assert.equal(ownReports.body.reports[0].title, 'Resident-owned report');
+
+  const publicReports = await request('/api/reports');
+  const publicResidentReport = publicReports.body.reports.find((report) => report.title === 'Resident-owned report');
+  assert.equal(publicResidentReport.reportedBy, undefined);
+  assert.equal(Object.hasOwn(publicResidentReport, 'residentId'), false);
+
+  const crossOriginMutation = await request('/api/auth/logout', {
+    method: 'POST',
+    headers: { Cookie: sessionCookie, Origin: 'https://attacker.example' },
+  });
+  assert.equal(crossOriginMutation.status, 403);
+
+  const duplicate = await request('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(account),
+  });
+  assert.equal(duplicate.status, 409);
+
+  const logout = await request('/api/auth/logout', {
+    method: 'POST',
+    headers: { Cookie: sessionCookie, Origin: 'http://localhost:3000' },
+  });
+  assert.equal(logout.status, 200);
+  assert.ok(logout.headers.get('set-cookie')?.startsWith('msr_session=;'));
 });
 
 test('categories endpoint returns the issue taxonomy', async () => {
@@ -115,20 +255,40 @@ test('report lifecycle creates and removes a report without leaving seeded data 
       municipality: 'City of Johannesburg',
     },
     priority: 'High',
-    status: 'Reported',
+    status: 'Resolved',
     reportedBy: 'Resident',
     image: '',
   };
 
-  const createResponse = await request('/api/reports', {
+  const anonymousCreate = await request('/api/reports', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+  assert.equal(anonymousCreate.status, 401);
+
+  const createResponse = await request('/api/reports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ ...payload, reportedBy: 'Spoofed Name', residentId: 'spoofed-owner' }),
+  });
 
   assert.equal(createResponse.status, 201);
   assert.equal(createResponse.body.report.title, payload.title);
+  assert.equal(createResponse.body.report.status, 'Reported');
   assert.equal(createResponse.body.report.location.latitude, payload.location.latitude);
+  assert.equal(createResponse.body.report.reportedBy, undefined);
+  assert.equal(createResponse.body.report.residentId, undefined);
+
+  const privateReports = await request('/api/my/reports', {
+    headers: { Authorization: residentAuthorization },
+  });
+  assert.equal(privateReports.status, 200);
+  assert.equal(privateReports.body.reports.length, 1);
+  assert.equal(privateReports.body.reports[0].title, payload.title);
+
+  const anonymousPrivateReports = await request('/api/my/reports');
+  assert.equal(anonymousPrivateReports.status, 401);
 
   const listResponse = await request('/api/reports');
   assert.equal(listResponse.status, 200);
@@ -147,6 +307,52 @@ test('report lifecycle creates and removes a report without leaving seeded data 
   assert.equal(finalList.body.reports.length, 0);
 
   writeStore({ reports: [], users: [], admins: [] });
+});
+
+test('evidence uploads reject unapproved formats and images over the size limit', async () => {
+  const payload = {
+    title: 'Image validation test',
+    description: 'The API must validate user uploads.',
+    category: 'Pothole',
+    location: { latitude: -25.7, longitude: 28.2, city: 'Pretoria', municipality: 'City of Tshwane' },
+  };
+
+  const unsupported = await request('/api/reports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ ...payload, image: 'data:image/svg+xml;base64,PHN2Zz4=' }),
+  });
+  assert.equal(unsupported.status, 400);
+
+  const oversized = await request('/api/reports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ ...payload, image: `data:image/png;base64,${'A'.repeat(4_200_001)}` }),
+  });
+  assert.equal(oversized.status, 400);
+});
+
+test('resident reports reject invalid categories and coordinates outside South Africa', async () => {
+  const payload = {
+    title: 'Location validation test',
+    description: 'The API rejects locations outside the service area.',
+    category: 'Pothole',
+    location: { latitude: -25.7, longitude: 28.2, city: 'Pretoria', municipality: 'City of Tshwane' },
+  };
+
+  const invalidCategory = await request('/api/reports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ ...payload, category: 'Fake Category' }),
+  });
+  assert.equal(invalidCategory.status, 400);
+
+  const outsideSouthAfrica = await request('/api/reports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ ...payload, location: { ...payload.location, latitude: 40, longitude: -74 } }),
+  });
+  assert.equal(outsideSouthAfrica.status, 400);
 });
 
 test('reports endpoint supports category and status filters and updates status correctly', async () => {
@@ -208,6 +414,15 @@ test('reports endpoint supports category and status filters and updates status c
   assert.equal(search.status, 200);
   assert.equal(search.body.reports.length, 1);
   assert.equal(search.body.reports[0].category, 'Burst Pipe');
+
+  const anonymousClear = await request('/api/reports', { method: 'DELETE' });
+  assert.equal(anonymousClear.status, 401);
+  const residentClear = await request('/api/reports', {
+    method: 'DELETE',
+    headers: { Authorization: residentAuthorization },
+  });
+  assert.equal(residentClear.status, 403);
+  assert.equal(readStore().reports.length, 2);
 
   const clearAll = await request('/api/reports', {
     method: 'DELETE',
@@ -331,10 +546,13 @@ test('staff triage, assignments, notes, updates, and duplicate links persist wit
   assert.equal(Object.hasOwn(publicReport.body.report, 'assignedStaffName'), false);
   assert.equal(Object.hasOwn(publicReport.body.report, 'department'), false);
   assert.equal(publicReport.body.report.residentUpdates.length, 1);
+  assert.equal(publicReport.body.report.residentUpdates[0].text, 'A maintenance team is attending to this issue.');
+  assert.equal(Object.hasOwn(publicReport.body.report.residentUpdates[0], 'authorId'), false);
 
   const publicList = await request('/api/reports');
   const publicDuplicate = publicList.body.reports.find((report) => report.id === 'duplicate-report');
   assert.equal(Object.hasOwn(publicDuplicate, 'staffNotes'), false);
+  assert.equal(Object.hasOwn(publicDuplicate.residentUpdates[0], 'authorId'), false);
 
   const canonicalReport = await request('/api/reports/primary-report');
   assert.equal(canonicalReport.body.report.duplicateReports.length, 1);
@@ -345,6 +563,7 @@ test('staff triage, assignments, notes, updates, and duplicate links persist wit
   });
   assert.equal(staffReport.status, 200);
   assert.equal(staffReport.body.report.staffNotes.length, 1);
+  assert.equal(staffReport.body.report.residentUpdates[0].authorId, 'staff-1');
 
   const staffList = await request('/api/admin/reports', { headers: { Authorization: staffAuthorization } });
   const staffSummary = staffList.body.reports.find((report) => report.id === 'duplicate-report');

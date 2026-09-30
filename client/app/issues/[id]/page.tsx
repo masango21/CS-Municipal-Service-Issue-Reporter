@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { use } from "react";
@@ -125,7 +126,14 @@ export default function IssueDetailsPage({ params }: { params: Promise<{ id: str
 
             {issue.image && (
               <div className="overflow-hidden rounded-2xl border border-slate-200">
-                <img src={issue.image} alt={issue.title} className="h-64 w-full object-cover" />
+                <Image
+                  src={issue.image}
+                  alt={issue.title}
+                  width={1200}
+                  height={800}
+                  unoptimized
+                  className="h-64 w-full object-cover"
+                />
               </div>
             )}
           </div>

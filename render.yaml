@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: municipal-service-api
+    runtime: node
+    rootDir: server
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: JWT_SECRET
+        sync: false
+      - key: ADMIN_REGISTRATION_KEYS
+        sync: false
+      - key: CLIENT_ORIGIN
+        sync: false
+      - key: SESSION_COOKIE_SAME_SITE
+        value: lax

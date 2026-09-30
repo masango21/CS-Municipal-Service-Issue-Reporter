@@ -158,7 +158,7 @@ export function MapView({
           address: place.display_name || "Searched location",
         });
       }
-    } catch (error) {
+    } catch {
       setSearchError("Search failed. Please try again.");
     }
   };

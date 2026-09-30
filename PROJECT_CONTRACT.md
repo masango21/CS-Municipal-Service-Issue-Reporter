@@ -15,7 +15,7 @@ To build a responsive web application that allows:
 - Residents to report municipal service issues with accurate map-based positioning
 - Municipal staff to track, search, filter, and review those reports
 - The system to start from a true zero-report state and grow as real submissions are made
-- The frontend to be designed in a way that can later connect to a real backend and database
+- A secure API and database-backed foundation for a controlled public pilot
 
 ## 3. Core Problem Statement
 
@@ -86,33 +86,28 @@ Municipal administrators should be able to:
 - Clear accessibility structure and labels
 - South Africa-focused map and location data
 - Reusable frontend components
-- Frontend-local data persistence during this phase
-- Architecture ready for future API and database replacement
+- API-backed resident/staff identity and report persistence
+- Private report history scoped to the authenticated resident
+- Production deployment remains gated on security, privacy, database migration, and hosting verification
 - No fake report data, no fake pins, no copied video data
 
 ## 7. Technical Constraints and Architecture Requirements
 
-### Current phase (frontend only)
+### Current public-pilot phase
 - Next.js
 - React
 - TypeScript
 - Tailwind CSS
-- shadcn/ui where appropriate
-- Lucide React icons
-- localStorage for report persistence
-- React Context as the main frontend state approach
-
-### Future backend phase
 - Node.js
 - Express
 - PostgreSQL
 - Neon
-- JWT
+- HttpOnly cookie sessions and server-side password hashes
 - Render
 - Vercel
 
-### Important boundary
-The backend is not being implemented in this phase. The frontend must be designed so that its data model can later be replaced with real API/database data.
+### Production boundary
+JSON file storage is limited to local development and isolated tests. Production requires PostgreSQL. Deployment and migrations against the existing Neon database require rotated credentials, a verified backup, a disposable-branch migration test, and explicit approval.
 
 ## 8. Core Data Principles
 
@@ -173,19 +168,19 @@ Deliverable:
 - Functional frontend
 
 ### Phase 4 — Backend Development
-Planned future phase
+Status: In progress; implementation and isolated tests are complete, but a real PostgreSQL migration is not yet verified.
 
 Purpose:
 - implement the API, database structure, authentication, and persistence layer
 
 ### Phase 5 — Testing, QA, and Refinement
-Planned future phase
+Status: In progress; hosted database, email recovery/verification, and object storage remain unverified or incomplete.
 
 Purpose:
 - validate all workflows, responsiveness, security preparation, and project readiness
 
 ### Phase 6 — Deployment and Production Readiness
-Planned future phase
+Status: Not deployed. Render/Vercel configuration is scaffolded; public launch requires separate approval and completed launch gates.
 
 Purpose:
 - deploy frontend and backend, prepare environment variables, and final production configuration
@@ -314,9 +309,12 @@ Deliverable:
 - Phase 1: Completed
 - Phase 2: Completed
 - Phase 3: Completed
+- Phase 4: In progress
+- Phase 5: In progress
+- Phase 6: Not deployed
 
 ### Scope note
-The current governing project instructions keep this phase frontend-only. Although server implementation exists in the repository, backend rollout and production deployment remain future work and are not claimed as completed by this contract.
+The approved scope now includes public-pilot hardening. No live service or production database migration is claimed as complete.
 
 ### Suggested next milestone schedule
 - Sprint 1: foundation complete
@@ -332,11 +330,13 @@ The current governing project instructions keep this phase frontend-only. Althou
 
 The project is successful when:
 - residents can submit issues with a map pin
-- issue data persists inside the frontend state
+- resident accounts and reports persist through the server/database
+- residents can see only their own private report history
 - admin users can view live report data and map locations
 - reports are generated from real user actions only
 - there are no hardcoded fake reports or demo pins
-- the app is ready to connect to backend services later
+- database/authentication failures never masquerade as successful local-only persistence
+- deployment, privacy, retention, and account recovery requirements are verified before public launch
 
 ## 14. Acceptance Statement
 
@@ -349,8 +349,9 @@ Current status:
 - Solution framed
 - Frontend design foundation established
 - Resident and admin frontend workflows implemented and verified
+- Server-side resident/staff auth and owner-scoped report API implemented
 - Zero-report starting condition preserved
-- Production deployment not performed
+- Production database migration not verified; production deployment not performed
 
 ## 16. Planned Commit Milestones
 
@@ -372,4 +373,4 @@ Examples of meaningful development checkpoints:
 
 ## 17. Final Note
 
-This project is a frontend-first municipal service reporting application with a clear path to later backend implementation. The frontend phase is complete; backend rollout and production deployment remain future phases under the current project scope.
+This project is a municipal service reporting application being hardened for a controlled public pilot. Resident/staff cookie authentication and database-backed report ownership are implemented and tested with isolated data. The production PostgreSQL migration, email recovery/verification, durable evidence storage, privacy process, credential rotation, and hosted deployment remain launch gates.

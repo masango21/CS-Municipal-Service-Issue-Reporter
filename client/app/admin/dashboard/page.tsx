@@ -33,13 +33,13 @@ export default function AdminDashboardPage() {
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
-    if (!isAuthReady || adminUser?.token) return;
+    if (!isAuthReady || adminUser) return;
     router.replace(residentUser ? "/dashboard" : "/admin/login");
   }, [adminUser, isAuthReady, residentUser, router]);
 
   useEffect(() => {
-    if (!adminUser?.token) return;
-    void Promise.all([refreshReports(adminUser.token), fetchStaffDirectory(adminUser.token)])
+    if (!adminUser) return;
+    void Promise.all([refreshReports(true), fetchStaffDirectory()])
       .then(([, staff]) => {
         setStaffCount(staff.length);
         setLoadError("");
@@ -47,7 +47,7 @@ export default function AdminDashboardPage() {
       .catch((error: unknown) => {
         setLoadError(error instanceof Error ? error.message : "Unable to load operations data.");
       });
-  }, [adminUser?.token, fetchStaffDirectory, refreshReports]);
+  }, [adminUser, fetchStaffDirectory, refreshReports]);
 
   const filteredReports = useMemo(() => {
     return reports.filter((issue) => {
@@ -72,7 +72,7 @@ export default function AdminDashboardPage() {
 
   const departmentOptions = Array.from(new Set(reports.map((issue) => issue.department).filter(Boolean))) as string[];
 
-  if (!isAuthReady || !adminUser?.token) {
+  if (!isAuthReady || !adminUser) {
     return (
       <main className="flex min-h-[60vh] items-center justify-center bg-slate-950 px-4 text-white" aria-busy="true">
         <p role="status" className="text-sm font-medium text-slate-300">Checking staff access...</p>
