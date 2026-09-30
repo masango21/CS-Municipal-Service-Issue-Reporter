@@ -32,7 +32,7 @@ const {
 const app = express();
 const PORT = process.env.PORT || 4000;
 const SESSION_COOKIE = 'msr_session';
-const CLIENT_ORIGINS = (process.env.CLIENT_ORIGIN || 'http://localhost:3000')
+const CLIENT_ORIGINS = (process.env.CLIENT_ORIGIN || 'http://localhost:3000,https://cs-municipal-service-issue-reporter.vercel.app')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
