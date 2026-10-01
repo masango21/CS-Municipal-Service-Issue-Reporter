@@ -81,6 +81,13 @@ export async function generateMunicipalityAccessCode(municipalityId: string) {
   );
 }
 
+export async function saveMunicipalityAccessCode(municipalityId: string, accessCode: string) {
+  return request<{ message: string }>(
+    `/api/admin/municipalities/${encodeURIComponent(municipalityId)}/generate-access-code`,
+    { method: "POST", body: JSON.stringify({ accessCode }) },
+  );
+}
+
 export async function fetchAdminMunicipalityReports(municipalityId: string) {
   return request<{ reports: import("@/types/issue").Issue[] }>(
     `/api/admin/reports?municipalityId=${encodeURIComponent(municipalityId)}`,

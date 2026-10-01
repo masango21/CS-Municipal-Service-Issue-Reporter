@@ -8,6 +8,7 @@ import {
   fetchAdminMunicipalities,
   fetchAdminMunicipalityReports,
   generateMunicipalityAccessCode,
+  saveMunicipalityAccessCode,
   setMunicipalityActive,
   type Municipality,
 } from "@/lib/municipalities";
@@ -21,6 +22,7 @@ export default function MunicipalityAdminPage() {
   const [reports, setReports] = useState<Issue[]>([]);
   const [search, setSearch] = useState("");
   const [generatedCode, setGeneratedCode] = useState("");
+  const [customCode, setCustomCode] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -87,6 +89,25 @@ export default function MunicipalityAdminPage() {
     }
   };
 
+  const saveCustomCode = async () => {
+    if (!selectedId || customCode.trim().length < 8) return;
+    setIsSaving(true);
+    setError("");
+    setMessage("");
+    setGeneratedCode("");
+    try {
+      const result = await saveMunicipalityAccessCode(selectedId, customCode);
+      setCustomCode("");
+      setMessage(result.message);
+      const refreshed = await fetchAdminMunicipalities();
+      setMunicipalities(refreshed.municipalities);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Unable to save the access code.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const toggleMunicipality = async () => {
     if (!selectedMunicipality) return;
     setIsSaving(true);
@@ -139,7 +160,7 @@ export default function MunicipalityAdminPage() {
                     {filteredMunicipalities.map((municipality) => (
                       <tr key={municipality.id} className={selectedId === municipality.id ? "bg-slate-900" : "hover:bg-slate-900/60"}>
                         <td className="px-3 py-3">
-                          <button type="button" onClick={() => { setSelectedId(municipality.id); setReports([]); setGeneratedCode(""); setMessage(""); }} className="text-left font-medium text-white hover:text-cyan-300">{municipality.name}</button>
+                          <button type="button" onClick={() => { setSelectedId(municipality.id); setReports([]); setGeneratedCode(""); setCustomCode(""); setMessage(""); }} className="text-left font-medium text-white hover:text-cyan-300">{municipality.name}</button>
                           <p className="mt-1 text-xs text-slate-500">{municipality.code} · Category {municipality.type || "not specified"}</p>
                         </td>
                         <td className="px-3 py-3 text-slate-300">{municipality.province || "—"}</td>
@@ -178,6 +199,15 @@ export default function MunicipalityAdminPage() {
                   <button type="button" onClick={() => void toggleMunicipality()} disabled={isSaving} className="rounded-lg border border-slate-600 px-4 py-2.5 text-sm font-semibold text-slate-300 hover:bg-slate-900 disabled:opacity-50">{selectedMunicipality.active === false ? "Activate" : "Deactivate"}</button>
                 </div>
 
+                <div className="border-b border-slate-800 py-5">
+                  <label htmlFor="custom-access-code" className="mb-2 block text-sm font-medium text-slate-200">Set a staff access code</label>
+                  <div className="flex flex-wrap gap-3">
+                    <input id="custom-access-code" type="password" minLength={8} maxLength={128} autoComplete="new-password" value={customCode} onChange={(event) => setCustomCode(event.target.value)} placeholder="At least 8 characters" className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-4 py-2.5 text-white placeholder:text-slate-500" />
+                    <button type="button" onClick={() => void saveCustomCode()} disabled={isSaving || customCode.trim().length < 8} className="rounded-lg border border-cyan-700 px-4 py-2.5 text-sm font-semibold text-cyan-200 hover:bg-cyan-950 disabled:opacity-50">Save access code</button>
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">Saving a new code immediately invalidates existing staff verification for this municipality.</p>
+                </div>
+
                 {message && <p role="status" className="mt-4 text-sm text-emerald-300">{message}</p>}
                 {generatedCode && (
                   <div className="mt-4 border-l-2 border-amber-400 bg-amber-950/30 p-4">
@@ -198,7 +228,7 @@ export default function MunicipalityAdminPage() {
                       {reports.map((report) => (
                         <li key={report.id} className="flex flex-wrap items-center justify-between gap-3 py-4">
                           <div>
-                            <Link href={`/admin/reports/${report.id}`} className="font-semibold text-white hover:text-cyan-300">{report.title}</Link>
+                            <p className="font-semibold text-white">{report.title}</p>
                             <p className="mt-1 text-sm text-slate-400">{report.category} · {report.location.address || report.location.municipality} · {report.status}</p>
                           </div>
                           <time className="text-xs text-slate-500" dateTime={report.reportedAt}>{new Date(report.reportedAt).toLocaleDateString()}</time>

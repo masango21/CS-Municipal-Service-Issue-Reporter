@@ -207,6 +207,12 @@ const requireStaff = requireRole('staff');
 const requireAdmin = requireStaff;
 const requireSuperAdmin = requireRole('super_admin');
 const requireResident = requireRole('resident');
+const requireOperationalStaff = (req, res, next) => requireStaff(req, res, () => {
+  if (req.auth.role !== 'staff') {
+    return res.status(403).json({ message: 'Municipal staff access is required.' });
+  }
+  return next();
+});
 
 async function getMunicipalityRecord(municipalityId) {
   if (pool) return getMunicipalityById(municipalityId);
@@ -736,7 +742,23 @@ app.get('/api/admin/municipalities', requireSuperAdmin, async (req, res) => {
     for (const municipality of sourceMunicipalities) await saveMunicipalityRecord(municipality);
     const municipalities = pool
       ? await listMunicipalities()
-      : readStore().municipalities;
+      : (() => {
+        const store = readStore();
+        const reportCounts = new Map();
+        for (const report of store.reports) {
+          const municipalityId = report.municipalityId || report.location?.municipalityId;
+          if (municipalityId) reportCounts.set(municipalityId, (reportCounts.get(municipalityId) || 0) + 1);
+        }
+        const staffCounts = new Map();
+        for (const assignment of store.staffMunicipalities) {
+          staffCounts.set(assignment.municipalityId, (staffCounts.get(assignment.municipalityId) || 0) + 1);
+        }
+        return store.municipalities.map((municipality) => ({
+          ...municipality,
+          reportCount: reportCounts.get(municipality.id) || 0,
+          staffCount: staffCounts.get(municipality.id) || 0,
+        }));
+      })();
     return res.status(200).json({ municipalities: municipalities.map(publicMunicipality) });
   } catch (error) {
     console.error('Official municipality directory failed:', error.message);
@@ -879,7 +901,11 @@ app.post('/api/admin/municipalities/:id/generate-access-code', requireSuperAdmin
   try {
     const municipality = await getMunicipalityRecord(municipalityId);
     if (!municipality) return res.status(404).json({ message: 'Municipality not found.' });
-    const accessCode = crypto.randomBytes(18).toString('base64url');
+    const hasCustomCode = Object.hasOwn(req.body || {}, 'accessCode');
+    const accessCode = hasCustomCode ? String(req.body.accessCode || '').trim() : crypto.randomBytes(18).toString('base64url');
+    if (hasCustomCode && (accessCode.length < 8 || accessCode.length > 128)) {
+      return res.status(400).json({ message: 'Access codes must be between 8 and 128 characters.' });
+    }
     const updated = pool
       ? await setMunicipalityAccessCode(municipalityId, hashPassword(accessCode))
       : (() => {
@@ -893,7 +919,12 @@ app.post('/api/admin/municipalities/:id/generate-access-code', requireSuperAdmin
         return record;
       })();
     if (!updated) return res.status(404).json({ message: 'Municipality not found.' });
-    await writeAudit({ userId: req.auth.id, municipalityId, action: 'municipality_access_code_reset' });
+    await writeAudit({
+      userId: req.auth.id,
+      municipalityId,
+      action: hasCustomCode ? 'municipality_access_code_saved' : 'municipality_access_code_reset',
+    });
+    if (hasCustomCode) return res.status(200).json({ message: 'The municipality access code was saved and previous staff verification was invalidated.' });
     return res.status(200).json({
       message: 'This access code is shown once. Store it securely and share it only with assigned staff.',
       accessCode,
@@ -985,14 +1016,34 @@ app.get('/api/admin/reports', requireAdmin, async (req, res) => {
       ? await getReportsFromDb({ municipalityId: municipalityId || undefined })
       : readStore().reports.filter((report) => !municipalityId ||
         (report.municipalityId || report.location?.municipalityId) === municipalityId);
-    return res.status(200).json({ reports: reports.map(staffReportSummary) });
+    const visibleReports = reports.map(req.auth.role === 'super_admin' ? publicReport : staffReportSummary);
+    return res.status(200).json({ reports: visibleReports });
   } catch (error) {
     console.error('Staff report fetch failed:', error);
     return res.status(500).json({ message: 'Failed to fetch staff reports' });
   }
 });
 
-app.get('/api/admin/reports/:id', requireAdmin, async (req, res) => {
+app.get('/api/staff/directory', requireOperationalStaff, async (req, res) => {
+  const municipalityId = await requireActiveMunicipality(req, res);
+  if (municipalityId === undefined) return;
+  try {
+    const candidates = pool ? await getStaffDirectoryFromDb() : readStore().admins;
+    const assignedStaff = await Promise.all(candidates
+      .filter((member) => (member.role || 'staff') === 'staff' && member.isActive !== false && member.active !== false)
+      .map(async (member) => await staffAssignedTo(member.id, municipalityId) ? {
+        id: member.id,
+        name: member.name,
+        email: member.email,
+      } : null));
+    return res.status(200).json({ staff: assignedStaff.filter(Boolean) });
+  } catch (error) {
+    console.error('Assigned staff directory fetch failed:', error.message);
+    return res.status(503).json({ message: 'Unable to load staff assigned to this municipality.' });
+  }
+});
+
+app.get('/api/admin/reports/:id', requireOperationalStaff, async (req, res) => {
   try {
     const report = await findAuthorizedReport(req, req.params.id, res);
     if (!report) return;
@@ -1147,7 +1198,7 @@ app.post('/api/reports', reportRateLimiter, requireResident, async (req, res) =>
   });
 });
 
-app.patch('/api/reports/:id/status', requireAdmin, async (req, res) => {
+app.patch('/api/reports/:id/status', requireOperationalStaff, async (req, res) => {
   const { status } = req.body || {};
 
   if (!status || !VALID_STATUSES.includes(status)) {
@@ -1195,7 +1246,7 @@ app.patch('/api/reports/:id/status', requireAdmin, async (req, res) => {
   });
 });
 
-app.patch('/api/reports/:id/triage', requireAdmin, async (req, res) => {
+app.patch('/api/reports/:id/triage', requireOperationalStaff, async (req, res) => {
   const payload = req.body || {};
   const allowedFields = ['status', 'category', 'priority', 'verified', 'department', 'maintenanceTeam', 'assignedStaffId', 'duplicateOf'];
   if (Object.keys(payload).some((field) => !allowedFields.includes(field))) {
@@ -1269,7 +1320,7 @@ app.patch('/api/reports/:id/triage', requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/reports/:id/notes', requireAdmin, async (req, res) => {
+app.post('/api/reports/:id/notes', requireOperationalStaff, async (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
   if (!text || text.length > 4000) return res.status(400).json({ message: 'Note must contain 1 to 4000 characters' });
   try {
@@ -1286,7 +1337,7 @@ app.post('/api/reports/:id/notes', requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/reports/:id/updates', requireAdmin, async (req, res) => {
+app.post('/api/reports/:id/updates', requireOperationalStaff, async (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
   const status = req.body?.status;
   if (!text || text.length > 4000 || !VALID_STATUSES.includes(status)) {

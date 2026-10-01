@@ -44,6 +44,10 @@ export default function StaffReportPage() {
       router.replace("/admin/login");
       return;
     }
+    if (adminUser.role !== "staff") {
+      router.replace("/admin/municipalities");
+      return;
+    }
 
     let active = true;
     void Promise.all([
@@ -133,7 +137,7 @@ export default function StaffReportPage() {
     }
   };
 
-  if (!isAuthReady || !adminUser || !issue) {
+  if (!isAuthReady || !adminUser || adminUser.role !== "staff" || !issue) {
     return (
       <main className="flex min-h-[60vh] items-center justify-center bg-slate-950 px-4 text-white" aria-busy="true">
         <p role={error ? "alert" : "status"} className="text-sm text-slate-300">{error || "Loading report operations..."}</p>

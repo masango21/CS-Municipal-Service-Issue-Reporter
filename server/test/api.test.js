@@ -138,6 +138,27 @@ test('health endpoint reports zero reports at startup', async () => {
   assert.equal(response.body.reportsCount, 0);
 });
 
+test('super-admin municipality directory counts file-store reports by municipality', async () => {
+  const store = readStore();
+  store.municipalities.push(
+    { id: 'TSH', code: 'TSH', name: 'City of Tshwane', province: 'Gauteng', type: 'A', active: true },
+    { id: 'MP313', code: 'MP313', name: 'Steve Tshwete', province: 'Mpumalanga', type: 'B', active: true },
+  );
+  store.reports.push(
+    { id: 'tshwane-report', municipalityId: 'TSH', location: { municipalityId: 'TSH' } },
+    { id: 'steve-tshwete-report', location: { municipalityId: 'MP313' } },
+  );
+  store.staffMunicipalities.push({ staffId: 'staff-1', municipalityId: 'TSH' });
+  writeStore(store);
+
+  const response = await request('/api/admin/municipalities', { headers: { Authorization: superAdminAuthorization } });
+  assert.equal(response.status, 200);
+  const municipalities = new Map(response.body.municipalities.map((municipality) => [municipality.id, municipality]));
+  assert.equal(municipalities.get('TSH').reportCount, 1);
+  assert.equal(municipalities.get('MP313').reportCount, 1);
+  assert.equal(municipalities.get('TSH').staffCount, 1);
+});
+
 test('super-admin bootstrap is token-gated and can only complete once', async () => {
   writeStore({ reports: [], users: [], admins: [], municipalities: [], staffMunicipalities: [], auditLogs: [] });
   const payload = {
@@ -216,9 +237,8 @@ test('staff municipality assignment and account deactivation are super-admin-onl
 });
 
 test('municipality access checks assignment before code and reset revokes active scope', async () => {
-  const accessCode = 'test-municipality-access-code';
+  const customCode = 'saved-municipality-code';
   const store = readStore();
-  store.municipalities[0].accessCodeHash = hashTestCode(accessCode);
   store.reports.push({
     id: 'scoped-report', title: 'Scoped report', description: 'A report in the assigned municipality',
     category: 'Pothole', location: { latitude: -25.7, longitude: 28.2, municipality: testMunicipality.name },
@@ -227,10 +247,25 @@ test('municipality access checks assignment before code and reset revokes active
   store.admins.push({ id: 'staff-2', name: 'Unassigned Staff', email: 'unassigned@example.test', password: 'scrypt:fixture:hash', role: 'staff' });
   writeStore(store);
 
+  const saved = await request(`/api/admin/municipalities/${testMunicipality.id}/generate-access-code`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: superAdminAuthorization },
+    body: JSON.stringify({ accessCode: customCode }),
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.accessCode, undefined);
+  assert.match(readStore().municipalities[0].accessCodeHash, /^scrypt:/);
+  assert.notEqual(readStore().municipalities[0].accessCodeHash, customCode);
+
+  const invalid = await request(`/api/admin/municipalities/${testMunicipality.id}/generate-access-code`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: superAdminAuthorization },
+    body: JSON.stringify({ accessCode: 'short' }),
+  });
+  assert.equal(invalid.status, 400);
+
   const unassignedToken = createToken({ id: 'staff-2', email: 'unassigned@example.test', role: 'staff' });
   const unassigned = await request(`/api/staff/municipalities/${testMunicipality.id}/verify-access`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${unassignedToken}` },
-    body: JSON.stringify({ accessCode }),
+    body: JSON.stringify({ accessCode: customCode }),
   });
   assert.equal(unassigned.status, 403);
 
@@ -242,7 +277,7 @@ test('municipality access checks assignment before code and reset revokes active
 
   const verified = await request(`/api/staff/municipalities/${testMunicipality.id}/verify-access`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: staffAuthorization },
-    body: JSON.stringify({ accessCode }),
+    body: JSON.stringify({ accessCode: customCode }),
   });
   assert.equal(verified.status, 200);
   assert.equal(Object.hasOwn(verified.body.municipality, 'accessCodeHash'), false);
@@ -718,6 +753,62 @@ test('report status changes require a valid staff token and assigned municipalit
   });
   assert.equal(staff.status, 200);
   assert.equal(staff.body.report.status, 'Under Review');
+});
+
+test('super admins cannot perform staff report operations and staff directory is municipality-scoped', async () => {
+  const report = {
+    id: 'primary-report', title: 'Primary pothole', description: 'A pothole', category: 'Pothole',
+    location: { latitude: -25.7, longitude: 28.2 }, municipalityId: testMunicipality.id,
+    priority: 'Medium', status: 'Reported', reportedBy: 'Resident', residentId: 'resident-1',
+    assignedStaffId: 'staff-1', assignedStaffName: 'Operations Staff',
+    staffNotes: [{ id: 'note-1', text: 'Private inspection note' }],
+  };
+  writeTestStore([report], {
+    admins: [{ id: 'staff-2', name: 'Unassigned Staff', email: 'unassigned@example.test', role: 'staff' }],
+  });
+
+  const superAdminHeaders = { Authorization: superAdminAuthorization, 'Content-Type': 'application/json' };
+  const overview = await request('/api/admin/reports?municipalityId=ZA-MOCK', { headers: superAdminHeaders });
+  assert.equal(overview.status, 200);
+  assert.equal(overview.body.reports.length, 1);
+  assert.equal(Object.hasOwn(overview.body.reports[0], 'reportedBy'), false);
+  assert.equal(Object.hasOwn(overview.body.reports[0], 'residentId'), false);
+  assert.equal(Object.hasOwn(overview.body.reports[0], 'assignedStaffName'), false);
+  assert.equal(Object.hasOwn(overview.body.reports[0], 'staffNotes'), false);
+
+  const detail = await request('/api/admin/reports/primary-report', { headers: superAdminHeaders });
+  assert.equal(detail.status, 403);
+
+  const status = await request('/api/reports/primary-report/status', {
+    method: 'PATCH', headers: superAdminHeaders, body: JSON.stringify({ status: 'In Progress' }),
+  });
+  assert.equal(status.status, 403);
+
+  const triage = await request('/api/reports/primary-report/triage', {
+    method: 'PATCH', headers: superAdminHeaders, body: JSON.stringify({ status: 'Resolved' }),
+  });
+  assert.equal(triage.status, 403);
+
+  const note = await request('/api/reports/primary-report/notes', {
+    method: 'POST', headers: superAdminHeaders, body: JSON.stringify({ text: 'Unauthorized note' }),
+  });
+  assert.equal(note.status, 403);
+
+  const update = await request('/api/reports/primary-report/updates', {
+    method: 'POST', headers: superAdminHeaders,
+    body: JSON.stringify({ status: 'In Progress', text: 'Unauthorized update' }),
+  });
+  assert.equal(update.status, 403);
+
+  const staffHeaders = { Authorization: staffAuthorization };
+  const directory = await request('/api/staff/directory', { headers: staffHeaders });
+  assert.equal(directory.status, 200);
+  assert.deepEqual(directory.body.staff, [{ id: 'staff-1', name: 'Operations Staff', email: 'staff@example.test' }]);
+
+  const savedReport = readStore().reports[0];
+  assert.equal(savedReport.status, 'Reported');
+  assert.deepEqual(savedReport.staffNotes, [{ id: 'note-1', text: 'Private inspection note' }]);
+  assert.equal(savedReport.residentUpdates, undefined);
 });
 
 test('staff triage, assignments, notes, updates, and duplicate links persist with correct visibility', async () => {

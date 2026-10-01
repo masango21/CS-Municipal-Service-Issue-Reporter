@@ -176,7 +176,7 @@ export function ReportsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const fetchStaffDirectory = useCallback(async () => {
-    const payload = await staffRequest<{ staff: StaffDirectoryEntry[] }>("/api/admin/staff");
+    const payload = await staffRequest<{ staff: StaffDirectoryEntry[] }>("/api/staff/directory");
     return payload.staff;
   }, []);
 
