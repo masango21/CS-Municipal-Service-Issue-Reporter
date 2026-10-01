@@ -74,16 +74,9 @@ export async function removeStaffMunicipality(staffId: string, municipalityId: s
   );
 }
 
-export async function generateMunicipalityAccessCode(municipalityId: string) {
-  return request<{ accessCode: string; message: string }>(
-    `/api/admin/municipalities/${encodeURIComponent(municipalityId)}/generate-access-code`,
-    { method: "POST" },
-  );
-}
-
 export async function saveMunicipalityAccessCode(municipalityId: string, accessCode: string) {
   return request<{ message: string }>(
-    `/api/admin/municipalities/${encodeURIComponent(municipalityId)}/generate-access-code`,
+    `/api/admin/municipalities/${encodeURIComponent(municipalityId)}/access-code`,
     { method: "POST", body: JSON.stringify({ accessCode }) },
   );
 }

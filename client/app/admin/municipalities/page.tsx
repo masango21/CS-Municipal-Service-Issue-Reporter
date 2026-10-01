@@ -7,7 +7,6 @@ import { useAuth } from "@/context/AuthContext";
 import {
   fetchAdminMunicipalities,
   fetchAdminMunicipalityReports,
-  generateMunicipalityAccessCode,
   saveMunicipalityAccessCode,
   setMunicipalityActive,
   type Municipality,
@@ -21,7 +20,6 @@ export default function MunicipalityAdminPage() {
   const [selectedId, setSelectedId] = useState("");
   const [reports, setReports] = useState<Issue[]>([]);
   const [search, setSearch] = useState("");
-  const [generatedCode, setGeneratedCode] = useState("");
   const [customCode, setCustomCode] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -72,29 +70,11 @@ export default function MunicipalityAdminPage() {
     }
   };
 
-  const generateCode = async () => {
-    if (!selectedId) return;
-    setIsSaving(true);
-    setError("");
-    setMessage("");
-    setGeneratedCode("");
-    try {
-      const result = await generateMunicipalityAccessCode(selectedId);
-      setGeneratedCode(result.accessCode);
-      setMessage(result.message);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Unable to generate an access code.");
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
   const saveCustomCode = async () => {
     if (!selectedId || customCode.trim().length < 8) return;
     setIsSaving(true);
     setError("");
     setMessage("");
-    setGeneratedCode("");
     try {
       const result = await saveMunicipalityAccessCode(selectedId, customCode);
       setCustomCode("");
@@ -116,7 +96,6 @@ export default function MunicipalityAdminPage() {
       await setMunicipalityActive(selectedId, selectedMunicipality.active === false);
       const result = await fetchAdminMunicipalities();
       setMunicipalities(result.municipalities);
-      setGeneratedCode("");
       setMessage("Municipality status updated. Existing staff verification has been invalidated.");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Unable to update municipality status.");
@@ -160,7 +139,7 @@ export default function MunicipalityAdminPage() {
                     {filteredMunicipalities.map((municipality) => (
                       <tr key={municipality.id} className={selectedId === municipality.id ? "bg-slate-900" : "hover:bg-slate-900/60"}>
                         <td className="px-3 py-3">
-                          <button type="button" onClick={() => { setSelectedId(municipality.id); setReports([]); setGeneratedCode(""); setCustomCode(""); setMessage(""); }} className="text-left font-medium text-white hover:text-cyan-300">{municipality.name}</button>
+                          <button type="button" onClick={() => { setSelectedId(municipality.id); setReports([]); setCustomCode(""); setMessage(""); }} className="text-left font-medium text-white hover:text-cyan-300">{municipality.name}</button>
                           <p className="mt-1 text-xs text-slate-500">{municipality.code} · Category {municipality.type || "not specified"}</p>
                         </td>
                         <td className="px-3 py-3 text-slate-300">{municipality.province || "—"}</td>
@@ -195,7 +174,6 @@ export default function MunicipalityAdminPage() {
 
                 <div className="flex flex-wrap gap-3 border-b border-slate-800 py-5">
                   <button type="button" onClick={() => void viewReports()} disabled={isLoadingReports} className="rounded-lg bg-cyan-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-cyan-600 disabled:opacity-50">{isLoadingReports ? "Loading reports..." : "View reports"}</button>
-                  <button type="button" onClick={() => void generateCode()} disabled={isSaving} className="rounded-lg border border-slate-600 px-4 py-2.5 text-sm font-semibold text-slate-100 hover:bg-slate-900 disabled:opacity-50">Generate / reset access code</button>
                   <button type="button" onClick={() => void toggleMunicipality()} disabled={isSaving} className="rounded-lg border border-slate-600 px-4 py-2.5 text-sm font-semibold text-slate-300 hover:bg-slate-900 disabled:opacity-50">{selectedMunicipality.active === false ? "Activate" : "Deactivate"}</button>
                 </div>
 
@@ -209,15 +187,6 @@ export default function MunicipalityAdminPage() {
                 </div>
 
                 {message && <p role="status" className="mt-4 text-sm text-emerald-300">{message}</p>}
-                {generatedCode && (
-                  <div className="mt-4 border-l-2 border-amber-400 bg-amber-950/30 p-4">
-                    <p className="text-sm font-semibold text-amber-200">One-time access code</p>
-                    <p className="mt-1 text-xs text-amber-100/80">Copy and share this only with staff assigned to this municipality. It will not be shown again.</p>
-                    <code className="mt-3 block break-all rounded bg-slate-950 p-3 font-mono text-sm text-white">{generatedCode}</code>
-                    <button type="button" onClick={() => void navigator.clipboard.writeText(generatedCode)} className="mt-3 text-sm font-semibold text-cyan-300 underline">Copy code</button>
-                  </div>
-                )}
-
                 <div className="mt-8">
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <h3 className="text-lg font-semibold">Reports</h3>

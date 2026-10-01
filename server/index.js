@@ -896,14 +896,13 @@ app.patch('/api/admin/municipalities/:id/active', requireSuperAdmin, async (req,
   }
 });
 
-app.post('/api/admin/municipalities/:id/generate-access-code', requireSuperAdmin, async (req, res) => {
+app.post('/api/admin/municipalities/:id/access-code', requireSuperAdmin, async (req, res) => {
   const municipalityId = String(req.params.id);
   try {
     const municipality = await getMunicipalityRecord(municipalityId);
     if (!municipality) return res.status(404).json({ message: 'Municipality not found.' });
-    const hasCustomCode = Object.hasOwn(req.body || {}, 'accessCode');
-    const accessCode = hasCustomCode ? String(req.body.accessCode || '').trim() : crypto.randomBytes(18).toString('base64url');
-    if (hasCustomCode && (accessCode.length < 8 || accessCode.length > 128)) {
+    const accessCode = String(req.body?.accessCode || '').trim();
+    if (accessCode.length < 8 || accessCode.length > 128) {
       return res.status(400).json({ message: 'Access codes must be between 8 and 128 characters.' });
     }
     const updated = pool
@@ -922,13 +921,9 @@ app.post('/api/admin/municipalities/:id/generate-access-code', requireSuperAdmin
     await writeAudit({
       userId: req.auth.id,
       municipalityId,
-      action: hasCustomCode ? 'municipality_access_code_saved' : 'municipality_access_code_reset',
+      action: 'municipality_access_code_saved',
     });
-    if (hasCustomCode) return res.status(200).json({ message: 'The municipality access code was saved and previous staff verification was invalidated.' });
-    return res.status(200).json({
-      message: 'This access code is shown once. Store it securely and share it only with assigned staff.',
-      accessCode,
-    });
+    return res.status(200).json({ message: 'The municipality access code was saved and previous staff verification was invalidated.' });
   } catch (error) {
     console.error('Municipality access-code generation failed:', error.message);
     return res.status(503).json({ message: 'Unable to generate an access code right now.' });

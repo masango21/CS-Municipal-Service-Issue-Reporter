@@ -247,7 +247,7 @@ test('municipality access checks assignment before code and reset revokes active
   store.admins.push({ id: 'staff-2', name: 'Unassigned Staff', email: 'unassigned@example.test', password: 'scrypt:fixture:hash', role: 'staff' });
   writeStore(store);
 
-  const saved = await request(`/api/admin/municipalities/${testMunicipality.id}/generate-access-code`, {
+  const saved = await request(`/api/admin/municipalities/${testMunicipality.id}/access-code`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: superAdminAuthorization },
     body: JSON.stringify({ accessCode: customCode }),
   });
@@ -256,7 +256,7 @@ test('municipality access checks assignment before code and reset revokes active
   assert.match(readStore().municipalities[0].accessCodeHash, /^scrypt:/);
   assert.notEqual(readStore().municipalities[0].accessCodeHash, customCode);
 
-  const invalid = await request(`/api/admin/municipalities/${testMunicipality.id}/generate-access-code`, {
+  const invalid = await request(`/api/admin/municipalities/${testMunicipality.id}/access-code`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: superAdminAuthorization },
     body: JSON.stringify({ accessCode: 'short' }),
   });
@@ -286,12 +286,14 @@ test('municipality access checks assignment before code and reset revokes active
   assert.equal(scopedReports.status, 200);
   assert.deepEqual(scopedReports.body.reports.map((report) => report.id), ['scoped-report']);
 
-  const reset = await request(`/api/admin/municipalities/${testMunicipality.id}/generate-access-code`, {
-    method: 'POST', headers: { Authorization: superAdminAuthorization },
+  const replacementCode = 'replacement-municipality-code';
+  const reset = await request(`/api/admin/municipalities/${testMunicipality.id}/access-code`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: superAdminAuthorization },
+    body: JSON.stringify({ accessCode: replacementCode }),
   });
   assert.equal(reset.status, 200);
-  assert.equal(typeof reset.body.accessCode, 'string');
-  assert.notEqual(readStore().municipalities[0].accessCodeHash, reset.body.accessCode);
+  assert.equal(reset.body.accessCode, undefined);
+  assert.notEqual(readStore().municipalities[0].accessCodeHash, replacementCode);
   const revoked = await request('/api/admin/reports', { headers: { Cookie: scopedCookie } });
   assert.equal(revoked.status, 403);
 });
@@ -338,7 +340,7 @@ test('staff cannot read or mutate another municipality report or use super-admin
 
   const staffDirectory = await request('/api/admin/staff', { headers: { Authorization: staffAuthorization } });
   assert.equal(staffDirectory.status, 403);
-  const codeManagement = await request('/api/admin/municipalities/ZA-OTHER/generate-access-code', {
+  const codeManagement = await request('/api/admin/municipalities/ZA-OTHER/access-code', {
     method: 'POST', headers: { Authorization: staffAuthorization },
   });
   assert.equal(codeManagement.status, 403);
