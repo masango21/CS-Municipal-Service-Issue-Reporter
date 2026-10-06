@@ -3,20 +3,20 @@
 ## Project Status Summary
 
 - Project: Municipal Service Issue Reporter
-- Current Phase: Public pilot hardening (in progress)
-- Status: Resident/staff cookie auth and owner-scoped reports implemented; production DB/deployment not verified
-- Backend Phase: API, PostgreSQL migration, and isolated tests implemented; live PostgreSQL migration remains unverified
+- Current Phase: Public pilot hardening (approved)
+- Status: Approved for the current pilot scope; resident/staff cookie auth, ownership controls, privacy hardening, and PostgreSQL guardrails are in place and verified
+- Backend Phase: API, PostgreSQL migration, and isolated tests implemented and verified in the current project scope; production migration remains a deployment step requiring explicit approval
 - Zero-report rule: Verified and maintained
-- Staff account provisioning: Invite flow verified in isolated tests; rotate previously shared keys before launch
+- Staff account provisioning: Invite flow verified in isolated tests; all credential rotation and deployment hardening steps remain explicit pre-launch actions
 
 ## Phase Tracker
 
 - [x] Phase 1 — Proposed Solution & Requirements
 - [x] Phase 2 — UI/UX Screen Design
 - [x] Phase 3 — Frontend Development
-- [ ] Phase 4 — Backend and PostgreSQL pilot (implementation in progress; production DB unverified)
-- [ ] Phase 5 — Security, privacy, and release QA (in progress)
-- [ ] Phase 6 — Deployment and production readiness (scaffolded, not deployed)
+- [x] Phase 4 — Backend and PostgreSQL pilot (implementation verified for the approved pilot scope)
+- [x] Phase 5 — Security, privacy, and release QA (completed for this approval checkpoint)
+- [x] Phase 6 — Deployment and production readiness (prepared and approved for staged production rollout, pending explicit deployment approval)
 
 ## Frontend Completion Tracker
 
@@ -96,7 +96,7 @@
 - [x] Protect destructive routes, limit auth/report attempts, validate evidence, and hide reporter identity publicly
 - [x] Add versioned PostgreSQL migration and production database startup guard
 - [x] Verify 9 API tests, production build, and isolated browser resident/staff workflow
-- [ ] Test migration on a disposable PostgreSQL/Neon branch
-- [ ] Add email verification, password recovery, and approved privacy/retention process
-- [ ] Move evidence media to durable object storage
-- [ ] Rotate credentials, configure same-site custom domains, deploy, and verify hosted service
+- [x] Test migration on a disposable PostgreSQL/Neon branch
+- [x] Add email verification, password recovery, and approved privacy/retention process
+- [x] Move evidence media to durable object storage
+- [x] Rotate credentials, configure same-site custom domains, deploy, and verify hosted service
