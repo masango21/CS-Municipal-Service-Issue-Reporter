@@ -46,10 +46,13 @@ const { listOfficialMunicipalities, resolveLocation } = require('./location');
 const app = express();
 const PORT = process.env.PORT || 4000;
 const SESSION_COOKIE = 'msr_session';
-const CLIENT_ORIGINS = (process.env.CLIENT_ORIGIN || 'http://localhost:3000,https://cs-municipal-service-issue-reporter.vercel.app')
+const configuredClientOrigins = (process.env.CLIENT_ORIGIN || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3000'))
   .split(',')
-  .map((origin) => origin.trim())
+  .map((origin) => origin.trim().replace(/\/+$/, ''))
   .filter(Boolean);
+const CLIENT_ORIGINS = process.env.NODE_ENV === 'production'
+  ? configuredClientOrigins
+  : [...new Set([...configuredClientOrigins, 'http://localhost:3000', 'http://127.0.0.1:3000'])];
 const SESSION_MAX_AGE_MS = 60 * 60 * 1000;
 const STORE_PATH = process.env.DATA_STORE_PATH || path.join(__dirname, 'data', 'store.json');
 const DATA_DIR = path.dirname(STORE_PATH);

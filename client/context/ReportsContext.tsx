@@ -12,9 +12,6 @@ import {
 } from "react";
 import type { Issue, IssueDraft, ResidentStatusUpdate, StaffNote } from "@/types/issue";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
-
 type ReportStats = {
   total: number;
   reported: number;
@@ -50,7 +47,7 @@ type ReportsContextValue = {
 const ReportsContext = createContext<ReportsContextValue | undefined>(undefined);
 
 async function fetchReportsFromApi(staffView = false): Promise<Issue[]> {
-  const response = await fetch(`${API_BASE_URL}${staffView ? "/api/admin/reports" : "/api/reports"}`, {
+  const response = await fetch(staffView ? "/api/admin/reports" : "/api/reports", {
     cache: "no-store",
     credentials: "include",
   });
@@ -60,7 +57,7 @@ async function fetchReportsFromApi(staffView = false): Promise<Issue[]> {
 }
 
 async function staffRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(path, {
     ...init,
     credentials: "include",
     headers: {
@@ -112,7 +109,7 @@ export function ReportsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addReport = async (draft: IssueDraft): Promise<Issue> => {
-    const response = await fetch(`${API_BASE_URL}/api/reports`, {
+    const response = await fetch("/api/reports", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -130,7 +127,7 @@ export function ReportsProvider({ children }: { children: ReactNode }) {
   };
 
   const fetchMyReports = useCallback(async () => {
-    const response = await fetch(`${API_BASE_URL}/api/my/reports`, {
+    const response = await fetch("/api/my/reports", {
       credentials: "include",
       cache: "no-store",
     });
@@ -199,7 +196,7 @@ export function ReportsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const resetReports = useCallback(async () => {
-    const response = await fetch(`${API_BASE_URL}/api/reports`, {
+    const response = await fetch("/api/reports", {
       method: "DELETE",
       credentials: "include",
     });

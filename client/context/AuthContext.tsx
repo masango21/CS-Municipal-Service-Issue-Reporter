@@ -49,13 +49,11 @@ type AuthContextValue = {
   logout: () => Promise<void>;
 };
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
-
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 async function authenticate(path: string, payload: Record<string, string>, role: Role): Promise<AuthResult> {
   try {
-    const response = await fetch(`${API_BASE_URL}${path}`, {
+    const response = await fetch(path, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -97,7 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       window.localStorage.removeItem(key);
     }
 
-    fetch(`${API_BASE_URL}/api/auth/session`, { credentials: "include", cache: "no-store" })
+    fetch("/api/auth/session", { credentials: "include", cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) throw new Error("Session lookup failed");
         return response.json() as Promise<{ user?: AppUser | null }>;
@@ -185,7 +183,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
-      await fetch(`${API_BASE_URL}/api/auth/logout`, { method: "POST", credentials: "include" });
+      await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
     } catch {
       // Clear in-memory state even when the server cannot be reached.
     } finally {

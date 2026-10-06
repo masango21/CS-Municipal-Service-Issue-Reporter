@@ -16,8 +16,6 @@ const LocationPicker = dynamic(
 );
 
 const priorities: IssuePriority[] = ["Low", "Medium", "High", "Critical"];
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
-
 export default function ReportIssuePage() {
   const router = useRouter();
   const { residentUser, adminUser, isAuthReady } = useAuth();
@@ -49,7 +47,7 @@ export default function ReportIssuePage() {
     const controller = new AbortController();
     let active = true;
 
-    void fetch(`${API_BASE_URL}/api/location/resolve`, {
+    void fetch("/api/location/resolve", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },

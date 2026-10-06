@@ -128,6 +128,17 @@ async function request(path, options = {}) {
   }
 }
 
+test('CORS allows local frontend origins in non-production and rejects unapproved origins', async () => {
+  for (const origin of ['http://localhost:3000', 'http://127.0.0.1:3000']) {
+    const response = await request('/api/health', { headers: { Origin: origin } });
+    assert.equal(response.headers.get('access-control-allow-origin'), origin);
+    assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
+  }
+
+  const unapproved = await request('/api/health', { headers: { Origin: 'https://unapproved.invalid' } });
+  assert.equal(unapproved.headers.get('access-control-allow-origin'), null);
+});
+
 test('health endpoint reports zero reports at startup', async () => {
   const store = readStore();
   assert.equal(store.reports.length, 0);

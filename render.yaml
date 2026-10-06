@@ -18,6 +18,6 @@ services:
       - key: ADMIN_REGISTRATION_KEYS
         sync: false
       - key: CLIENT_ORIGIN
-        sync: false
+        value: https://cs-municipal-service-issue-reporter.vercel.app,https://cs-municipal-service-issue-reporter-fyjkluqj8.vercel.app
       - key: SESSION_COOKIE_SAME_SITE
-        value: lax
+        value: none

@@ -8,8 +8,8 @@ This repository contains deployment scaffolding, but no service is deployed or v
 
 - Rotate the Neon database password, JWT signing secret, and staff invite keys. Their previous values were shared in chat and must be treated as compromised. Enter replacements directly in provider dashboards or local ignored environment files; never commit or send them in chat.
 - Use separate development/staging and production Neon databases. Back up the production database and test the migration against a disposable Neon branch before allowing the API to apply it to production.
-- Configure app and API custom domains under the same registrable domain, for example `reports.example.gov.za` and `api.example.gov.za`. The default Vercel and Render hostnames are cross-site; the default `SameSite=Lax` cookie will not reliably authenticate across them.
-- Set an exact `CLIENT_ORIGIN` matching the frontend origin and `NEXT_PUBLIC_API_BASE_URL` matching the API origin. Both services must use HTTPS in production.
+- The client proxies browser `/api/*` requests through the Next.js origin to the API configured in `NEXT_PUBLIC_API_BASE_URL`. This keeps session cookies first-party in the browser. For clients that call the API directly, Vercel and Render hostnames are cross-site; `SESSION_COOKIE_SAME_SITE=none` requires HTTPS and may still be blocked by browser third-party-cookie restrictions. Same-site custom domains are more reliable for direct calls.
+- Set exact comma-separated `CLIENT_ORIGIN` values matching each deployed frontend origin, including the current Vercel preview when it is used, and set `NEXT_PUBLIC_API_BASE_URL` to the API origin used by the rewrite. Both services must use HTTPS in production.
 - Provide a verified municipal contact, privacy notice, retention/deletion policy, and incident-response contact. Resident email verification and password recovery are not implemented; add an approved identity/recovery process before unrestricted public registration.
 - Evidence images are limited to 3 MB and stored in PostgreSQL. Choose and configure durable object storage before broad public use to avoid unbounded database growth.
 
@@ -25,7 +25,7 @@ This repository contains deployment scaffolding, but no service is deployed or v
 - `REVERSE_GEOCODER_URL`, `GEOCODING_USER_AGENT`, `GEOCODING_CONTACT`: server-side reverse-geocoder configuration and identifying contact. The public Nominatim endpoint is rate-limited to one request/second/application and subject to its usage policy; use a suitable provider or self-host for public traffic.
 - `ENABLE_MUNICIPALITY_SCOPING_MIGRATION=true`: set only after migration 002 passes disposable-PostgreSQL verification and production change approval. Without it, startup refuses to apply the new migration.
 - `CLIENT_ORIGIN`: exact HTTPS frontend origin.
-- `DATABASE_SSL=true` and `SESSION_COOKIE_SAME_SITE=lax` for HTTPS on same-site custom domains.
+- `DATABASE_SSL=true`; use `SESSION_COOKIE_SAME_SITE=none` for cross-site Vercel/Render hostnames or `lax` for HTTPS on same-site custom domains.
 
 Production startup refuses to use JSON file storage. The API applies versioned SQL files under `server/sql/migrations/` at startup; migration 002 is explicitly gated after disposable-database validation and production approval. The API does not seed reports, residents, or staff accounts.
 
