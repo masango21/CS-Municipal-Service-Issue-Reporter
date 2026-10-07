@@ -87,20 +87,12 @@ export function NavBar() {
               </button>
             </>
           ) : (
-            <>
-              <Link
-                href="/login"
-                className="rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-emerald-200 hover:text-emerald-700"
-              >
-                {t("residentLogin")}
-              </Link>
-              <Link
-                href="/admin/login"
-                className="rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
-              >
-                {t("staffLogin")}
-              </Link>
-            </>
+            <Link
+              href="/login"
+              className="rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-emerald-200 hover:text-emerald-700"
+            >
+              {t("residentLogin")}
+            </Link>
           )}
         </div>
       </div>

@@ -57,12 +57,6 @@ export default function HomePage() {
                 >
                   {t("ctaReport")}
                 </Link>
-                <Link
-                  href="/admin/login"
-                  className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-6 py-3 text-base font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-900"
-                >
-                  {t("staffLogin")}
-                </Link>
               </div>
             )}
 

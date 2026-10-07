@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { Footer } from "@/components/Footer";
 import { NavBar } from "@/components/NavBar";
 import { AuthProvider } from "@/context/AuthContext";
 import { LanguageProvider } from "@/context/LanguageContext";
@@ -34,6 +35,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
               <div className="min-h-screen">
                 <NavBar />
                 {children}
+                <Footer />
               </div>
             </ReportsProvider>
           </AuthProvider>
