@@ -18,10 +18,10 @@ const serviceCategories = [
 ];
 
 const supportItems = [
-  { label: "Help / FAQ", href: null },
-  { label: "Contact", href: null },
-  { label: "Privacy Policy", href: null },
-  { label: "Terms of Use", href: null },
+  { label: "Help / FAQ", href: "/help" },
+  { label: "Contact", href: "/contact" },
+  { label: "Privacy Policy", href: "/privacy" },
+  { label: "Terms of Use", href: "/terms" },
 ];
 
 export function Footer() {
@@ -71,7 +71,14 @@ export function Footer() {
                   </Link>
                 </li>
               ))}
-              <li className="text-slate-300">About</li>
+              <li>
+                <Link
+                  href="/about"
+                  className="inline-flex rounded-md text-slate-300 transition hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+                >
+                  About
+                </Link>
+              </li>
             </ul>
           </nav>
 
@@ -93,7 +100,12 @@ export function Footer() {
             <ul className="mt-4 space-y-3 text-sm">
               {supportItems.map((item) => (
                 <li key={item.label}>
-                  <span className="text-slate-300">{item.label}</span>
+                  <Link
+                    href={item.href}
+                    className="inline-flex rounded-md text-slate-300 transition hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+                  >
+                    {item.label}
+                  </Link>
                 </li>
               ))}
             </ul>
