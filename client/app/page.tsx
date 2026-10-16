@@ -90,7 +90,13 @@ export default function HomePage() {
             </div>
 
             <div className="mt-6">
-              {reportsError ? <p role="alert" className="p-8 text-center text-sm text-rose-200">Live issue data is temporarily unavailable.</p> : <ReportMap issues={reports} compact emptyMessage={t("mapEmpty")} />}
+              {reportsError ? (
+                <p role="alert" className="p-8 text-center text-sm text-rose-200">Live issue data is temporarily unavailable.</p>
+              ) : !isReportsReady ? (
+                <p role="status" className="p-8 text-center text-sm text-slate-300">Loading live reports...</p>
+              ) : (
+                <ReportMap issues={reports} compact exploreGeography emptyMessage={t("mapEmpty")} />
+              )}
             </div>
 
             <div className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">

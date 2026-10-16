@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const { createServer } = require('http');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const helmet = require('helmet');
@@ -19,6 +20,11 @@ const {
   updateReportOperationsInDb,
   deleteReportInDb,
   deleteAllReportsInDb,
+  getAiAssistantConversations,
+  getAiAssistantConversation,
+  createAiAssistantConversation,
+  getAiAssistantMessages,
+  appendAiAssistantTurn,
   getResidentByEmail,
   createResidentInDb,
   getStaffByEmail,
@@ -42,6 +48,7 @@ const {
   pool,
 } = require('./db');
 const { listOfficialMunicipalities, resolveLocation } = require('./location');
+const { AssistantProviderError, getAssistantReply } = require('./ai-assistant');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -74,6 +81,8 @@ const DEFAULT_STORE = {
   municipalities: [],
   staffMunicipalities: [],
   auditLogs: [],
+  chatConversations: [],
+  aiAssistantConversations: [],
 };
 
 function ensureDataStore() {
@@ -100,6 +109,8 @@ function readStore() {
       municipalities: Array.isArray(parsed.municipalities) ? parsed.municipalities : [],
       staffMunicipalities: Array.isArray(parsed.staffMunicipalities) ? parsed.staffMunicipalities : [],
       auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
+      chatConversations: Array.isArray(parsed.chatConversations) ? parsed.chatConversations : [],
+      aiAssistantConversations: Array.isArray(parsed.aiAssistantConversations) ? parsed.aiAssistantConversations : [],
     };
   } catch (error) {
     console.error('Unable to read store, resetting to empty state.', error);
@@ -210,6 +221,118 @@ const requireStaff = requireRole('staff');
 const requireAdmin = requireStaff;
 const requireSuperAdmin = requireRole('super_admin');
 const requireResident = requireRole('resident');
+const MAIN_API_TIMEOUT_MS = 5000;
+const DEFAULT_MAIN_API_BASE_URL = 'http://127.0.0.1:4000';
+
+class MainApiUnavailableError extends Error {
+  constructor() {
+    super('The main application API could not verify this session.');
+    this.name = 'MainApiUnavailableError';
+  }
+}
+
+function mainApiRequestHeaders(req) {
+  const headers = { Accept: 'application/json' };
+  const sessionCookie = req.cookies?.[SESSION_COOKIE];
+  const authorization = req.headers.authorization;
+  if (typeof sessionCookie === 'string' && sessionCookie) {
+    headers.cookie = `${SESSION_COOKIE}=${encodeURIComponent(sessionCookie)}`;
+  }
+  if (typeof authorization === 'string' && /^Bearer\s+\S+$/i.test(authorization)) {
+    headers.authorization = authorization;
+  }
+  return headers;
+}
+
+async function requestMainApiJson(req, route) {
+  const baseUrl = req.app.locals.mainApiBaseUrl || process.env.MAIN_API_BASE_URL || DEFAULT_MAIN_API_BASE_URL;
+  let url;
+  try {
+    const configuredUrl = new URL(baseUrl);
+    if (!['http:', 'https:'].includes(configuredUrl.protocol)) throw new Error('Unsupported protocol');
+    url = new URL(route, configuredUrl);
+  } catch {
+    throw new MainApiUnavailableError();
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    req.app.locals.mainApiTimeoutMs || MAIN_API_TIMEOUT_MS,
+  );
+  timeout.unref?.();
+  try {
+    const fetchImpl = req.app.locals.mainApiFetch || globalThis.fetch;
+    const response = await fetchImpl(url, {
+      method: 'GET',
+      headers: mainApiRequestHeaders(req),
+      signal: controller.signal,
+    });
+    let body;
+    try {
+      body = await response.json();
+    } catch {
+      throw new MainApiUnavailableError();
+    }
+    return { response, body };
+  } catch {
+    throw new MainApiUnavailableError();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function getMainApiSessionUser(req) {
+  if (req.app.locals.mainApiSessionVerifier) {
+    return req.app.locals.mainApiSessionVerifier(req);
+  }
+  if (!req.cookies?.[SESSION_COOKIE] && !/^Bearer\s+\S+$/i.test(req.headers.authorization || '')) return null;
+  const { response, body } = await requestMainApiJson(req, '/api/auth/session');
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) return null;
+    throw new MainApiUnavailableError();
+  }
+  if (body?.user == null) return null;
+  if (typeof body.user.id !== 'string' || !body.user.id ||
+      typeof body.user.role !== 'string') {
+    throw new MainApiUnavailableError();
+  }
+  return body.user;
+}
+
+async function listMainApiResidentReports(req) {
+  if (req.app.locals.mainApiResidentReportLister) {
+    return req.app.locals.mainApiResidentReportLister(req);
+  }
+  const { response, body } = await requestMainApiJson(req, '/api/my/reports');
+  if (!response.ok || !Array.isArray(body?.reports)) throw new MainApiUnavailableError();
+  return body.reports;
+}
+
+async function requireMainApiResident(req, res, next) {
+  try {
+    const user = await getMainApiSessionUser(req);
+    if (!user) return res.status(401).json({ message: 'Authentication is required' });
+    if (user.role !== 'resident') return res.status(403).json({ message: 'Access is not permitted' });
+    req.auth = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: 'resident',
+    };
+    return next();
+  } catch {
+    console.error('AI assistant main API verification failed: upstream_unavailable');
+    return res.status(503).json({ message: 'Unable to verify account access right now.' });
+  }
+}
+
+const validateAssistantConversationId = (req, res, next) => {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(req.params.id)) {
+    return res.status(404).json({ message: 'Assistant conversation not found.' });
+  }
+  return next();
+};
 const requireOperationalStaff = (req, res, next) => requireStaff(req, res, () => {
   if (req.auth.role !== 'staff') {
     return res.status(403).json({ message: 'Municipal staff access is required.' });
@@ -436,6 +559,96 @@ function withDuplicateReferences(report, reports) {
   };
 }
 
+async function getAssistantConversationRecord(conversationId, residentId) {
+  if (pool) return getAiAssistantConversation(conversationId, residentId);
+  const conversation = readStore().aiAssistantConversations.find(
+    (entry) => entry.id === conversationId && entry.residentId === residentId,
+  );
+  if (!conversation) return null;
+  const lastMessage = conversation.messages.at(-1);
+  return {
+    id: conversation.id,
+    createdAt: conversation.createdAt,
+    updatedAt: conversation.updatedAt,
+    lastMessage: lastMessage?.content || null,
+  };
+}
+
+async function listAssistantConversationRecords(residentId) {
+  if (pool) return getAiAssistantConversations(residentId);
+  return readStore().aiAssistantConversations
+    .filter((entry) => entry.residentId === residentId)
+    .map((entry) => ({
+      id: entry.id,
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+      lastMessage: entry.messages.at(-1)?.content || null,
+    }))
+    .sort((first, second) => String(second.updatedAt).localeCompare(String(first.updatedAt)));
+}
+
+async function createAssistantConversation(residentId) {
+  if (pool) return createAiAssistantConversation(residentId);
+  const store = readStore();
+  const now = new Date().toISOString();
+  const conversation = {
+    id: crypto.randomUUID(),
+    residentId,
+    createdAt: now,
+    updatedAt: now,
+    messages: [],
+  };
+  store.aiAssistantConversations.unshift(conversation);
+  writeStore(store);
+  return { id: conversation.id, createdAt: now, updatedAt: now, lastMessage: null };
+}
+
+async function getAssistantMessages(conversationId) {
+  if (pool) return getAiAssistantMessages(conversationId);
+  return readStore().aiAssistantConversations
+    .find((entry) => entry.id === conversationId)?.messages || [];
+}
+
+async function appendAssistantTurn({ conversationId, residentId, userContent, assistantContent }) {
+  if (pool) {
+    return appendAiAssistantTurn({ conversationId, residentId, userContent, assistantContent });
+  }
+  const store = readStore();
+  const conversation = store.aiAssistantConversations.find(
+    (entry) => entry.id === conversationId && entry.residentId === residentId,
+  );
+  if (!conversation) return null;
+  const now = new Date().toISOString();
+  const messages = [
+    { id: crypto.randomUUID(), conversationId, role: 'user', content: userContent, createdAt: now },
+    { id: crypto.randomUUID(), conversationId, role: 'assistant', content: assistantContent, createdAt: now },
+  ];
+  conversation.messages.push(...messages);
+  conversation.updatedAt = now;
+  writeStore(store);
+  return messages;
+}
+
+function assistantReportContext(report) {
+  if (!report) return null;
+  return {
+    reference: report.id,
+    title: report.title,
+    category: report.category,
+    description: report.description,
+    priority: report.priority,
+    status: report.status,
+    municipality: report.location?.municipality || report.municipality || null,
+    city: report.location?.city || report.city || null,
+    reportedAt: report.reportedAt,
+    residentUpdates: (report.residentUpdates || []).map(({ status, text, createdAt }) => ({
+      status,
+      text,
+      createdAt,
+    })),
+  };
+}
+
 app.set('trust proxy', process.env.NODE_ENV === 'production' ? 1 : false);
 app.use(helmet());
 app.use(cookieParser());
@@ -478,6 +691,13 @@ const accessCodeRateLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: 'Too many access-code attempts. Please try again later.' },
 });
+const assistantMessageRateLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { message: 'The AI assistant is temporarily rate limited. Please try again later.' },
+});
 app.use([
   '/api/auth/register',
   '/api/auth/login',
@@ -495,7 +715,14 @@ app.use((req, res, next) => {
   return next();
 });
 
-module.exports = { app, readStore, writeStore, makeId, createToken, requireAdmin };
+module.exports = {
+  app,
+  readStore,
+  writeStore,
+  makeId,
+  createToken,
+  requireAdmin,
+};
 
 app.locals.locationResolver = resolveLocation;
 app.locals.municipalityLister = listOfficialMunicipalities;
@@ -1021,6 +1248,103 @@ app.get('/api/admin/reports', requireAdmin, async (req, res) => {
     return res.status(500).json({ message: 'Failed to fetch staff reports' });
   }
 });
+
+app.get('/api/assistant/conversations', requireMainApiResident, async (req, res) => {
+  try {
+    const conversations = await listAssistantConversationRecords(req.auth.id);
+    return res.status(200).json({ conversations });
+  } catch (error) {
+    console.error('AI assistant conversation list failed:', error.message);
+    return res.status(503).json({ message: 'Unable to load assistant conversations right now.' });
+  }
+});
+
+app.post('/api/assistant/conversations', requireMainApiResident, async (req, res) => {
+  try {
+    const conversation = await createAssistantConversation(req.auth.id);
+    if (!conversation) throw new Error('Assistant conversation was not created.');
+    return res.status(201).json({ conversation });
+  } catch (error) {
+    console.error('AI assistant conversation creation failed:', error.message);
+    return res.status(503).json({ message: 'Unable to start an AI assistant conversation right now.' });
+  }
+});
+
+app.get('/api/assistant/conversations/:id/messages', requireMainApiResident, validateAssistantConversationId, async (req, res) => {
+  try {
+    const conversation = await getAssistantConversationRecord(req.params.id, req.auth.id);
+    if (!conversation) return res.status(404).json({ message: 'Assistant conversation not found.' });
+    const messages = await getAssistantMessages(conversation.id);
+    return res.status(200).json({ conversation, messages });
+  } catch (error) {
+    console.error('AI assistant message history fetch failed:', error.message);
+    return res.status(503).json({ message: 'Unable to load assistant messages right now.' });
+  }
+});
+
+app.post('/api/assistant/conversations/:id/messages', requireMainApiResident, validateAssistantConversationId, assistantMessageRateLimiter, async (req, res) => {
+  const content = typeof req.body?.content === 'string' ? req.body.content.trim() : '';
+  const reportReference = req.body?.reportReference;
+  if (!content || content.length > 2000) {
+    return res.status(400).json({ message: 'Enter a message of 1 to 2000 characters.' });
+  }
+  if (reportReference !== undefined && reportReference !== null &&
+      (typeof reportReference !== 'string' || !reportReference.trim() || reportReference.length > 100)) {
+    return res.status(400).json({ message: 'The report reference is invalid.' });
+  }
+
+  try {
+    const conversation = await getAssistantConversationRecord(req.params.id, req.auth.id);
+    if (!conversation) return res.status(404).json({ message: 'Assistant conversation not found.' });
+
+    let report = null;
+    if (reportReference) {
+      const residentReports = await listMainApiResidentReports(req);
+      report = residentReports.find((candidate) => candidate.id === reportReference.trim()) || null;
+      if (!report) {
+        return res.status(404).json({ message: 'The report was not found for this account.' });
+      }
+    }
+
+    const previousMessages = await getAssistantMessages(conversation.id);
+    const provider = req.app.locals.assistantProvider || getAssistantReply;
+    const assistantContent = await provider({
+      messages: [
+        ...previousMessages.slice(-20).map(({ role, content: previousContent }) => ({
+          role,
+          content: previousContent,
+        })),
+        { role: 'user', content },
+      ],
+      reportContext: assistantReportContext(report),
+      categories: DEFAULT_CATEGORIES,
+      statuses: VALID_STATUSES,
+      priorities: VALID_PRIORITIES,
+    });
+    if (typeof assistantContent !== 'string' || !assistantContent.trim() || assistantContent.trim().length > 4000) {
+      throw new AssistantProviderError('The AI assistant returned an invalid response.', 'invalid_response');
+    }
+
+    const messages = await appendAssistantTurn({
+      conversationId: conversation.id,
+      residentId: req.auth.id,
+      userContent: content,
+      assistantContent: assistantContent.trim(),
+    });
+    if (!messages) return res.status(404).json({ message: 'Assistant conversation not found.' });
+    return res.status(201).json({ messages });
+  } catch (error) {
+    const message = error instanceof AssistantProviderError
+      ? error.message
+      : 'The AI assistant is temporarily unavailable. Please try again.';
+    console.error('AI assistant request failed:', error instanceof AssistantProviderError ? error.code : 'internal_error');
+    return res.status(503).json({ message });
+  }
+});
+
+app.use('/api/chat', (req, res) => res.status(410).json({
+  message: 'Resident-to-staff chat has been retired. Use the AI Assistant instead.',
+}));
 
 app.get('/api/staff/directory', requireOperationalStaff, async (req, res) => {
   const municipalityId = await requireActiveMunicipality(req, res);
@@ -1617,7 +1941,8 @@ if (require.main === module) {
   } else {
   initDatabase()
     .then(() => {
-      app.listen(PORT, () => {
+      const server = createServer(app);
+      server.listen(PORT, () => {
         console.log(`Municipal Service Server listening on port ${PORT}`);
         console.log(`Database enabled: ${Boolean(pool)}`);
         console.log(`Store path: ${STORE_PATH}`);
@@ -1630,7 +1955,8 @@ if (require.main === module) {
         process.exitCode = 1;
         return;
       }
-      app.listen(PORT, () => {
+      const server = createServer(app);
+      server.listen(PORT, () => {
         console.log(`Municipal Service Server listening on port ${PORT}`);
         console.log(`Store path: ${STORE_PATH}`);
       });

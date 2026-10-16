@@ -6,12 +6,14 @@ Residents can report municipal service problems with map coordinates; staff revi
 Cookie-based resident/staff authentication, owner-scoped reports, PostgreSQL migrations, privacy controls, isolated API tests, and the client build are implemented. The app is **not live or ready for unrestricted public registration**. Database migration verification, credential rotation, email recovery/verification, durable evidence storage, privacy review, and hosting setup remain launch gates. See [DEPLOYMENT.md](DEPLOYMENT.md).
 
 The app starts with 0 reports and 0 map pins. No sample reports, residents, or staff are seeded.
+Authenticated residents can use the floating AI Assistant for application guidance and help understanding their own reports. The assistant calls its AI provider only from the server; it is not a resident-to-staff chat and cannot submit or change reports.
 
 ## Stack
 
 - Next.js, React, TypeScript, Tailwind CSS
 - Express API with PostgreSQL/Neon in production
 - HttpOnly cookie sessions and server-side password hashing
+- Server-side local Ollama integration and owner-scoped AI conversation history
 - JSON file store only for local development and isolated tests
 - Leaflet/OpenStreetMap for South Africa-focused report maps
 
@@ -33,6 +35,7 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 ```
 
 Then run `npm start` from `server/`.
+The assistant uses local Ollama; it does not require an OpenAI API key. Install Ollama, pull the configured `OLLAMA_MODEL`, and set `OLLAMA_BASE_URL` and `OLLAMA_MODEL` in the server environment. See [server/README.md](server/README.md#local-ai-assistant-windows) for isolated port-4001 startup and verification steps. If Ollama or the model is unavailable, the API reports a safe error instead of returning canned responses.
 
 2. In `client/`:
 

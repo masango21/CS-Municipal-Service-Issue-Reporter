@@ -3,6 +3,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { test, beforeEach, afterEach, after } = require('node:test');
+const jwt = require('jsonwebtoken');
 
 process.env.USE_FILE_STORE = 'true';
 process.env.NODE_ENV = 'test';
@@ -39,11 +40,69 @@ function writeTestStore(reports = [], { users = [], admins = [] } = {}) {
     municipalities: [{ ...testMunicipality }],
     staffMunicipalities: [{ staffId: 'staff-1', municipalityId: 'ZA-MOCK', createdAt: new Date().toISOString() }],
     auditLogs: [],
+    chatConversations: [],
+    aiAssistantConversations: [],
   });
 }
 
 function resetStore() {
   writeTestStore();
+}
+
+function mockMainApiResponse(status, body) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  };
+}
+
+function createMainApiFetch() {
+  return async (url, options) => {
+    const route = new URL(url).pathname;
+    const bearer = options.headers.authorization;
+    const cookie = options.headers.cookie?.match(/(?:^|;\s*)msr_session=([^;]+)/)?.[1];
+    const token = bearer?.replace(/^Bearer\s+/i, '') || cookie;
+    let claims = null;
+    if (token) {
+      try {
+        claims = jwt.verify(token, process.env.JWT_SECRET || 'test-only-secret');
+      } catch {
+        claims = null;
+      }
+    }
+
+    if (route === '/api/auth/session') {
+      const store = readStore();
+      const account = claims?.role === 'resident'
+        ? store.users.find((user) => user.id === claims.id && user.email === claims.email)
+        : store.admins.find((admin) => admin.id === claims?.id);
+      if (!account || account.isActive === false || account.active === false) {
+        return mockMainApiResponse(200, { user: null });
+      }
+      const role = claims.role === 'resident'
+        ? 'resident'
+        : account.role === 'super_admin' ? 'super_admin' : 'staff';
+      return mockMainApiResponse(200, {
+        user: { id: account.id, name: account.name, email: account.email, role },
+      });
+    }
+
+    if (route === '/api/my/reports' && claims?.role === 'resident') {
+      const reports = readStore().reports
+        .filter((report) => report.residentId === claims.id)
+        .map(({ staffNotes, verifiedBy, assignedStaffId, assignedStaffName, department,
+          maintenanceTeam, residentId, reportedBy, residentUpdates, ...report }) => ({
+          ...report,
+          ...(Array.isArray(residentUpdates) ? {
+            residentUpdates: residentUpdates.map(({ authorId, ...update }) => update),
+          } : {}),
+        }));
+      return mockMainApiResponse(200, { reports });
+    }
+
+    return mockMainApiResponse(404, { message: 'Not found' });
+  };
 }
 
 function hashTestCode(code) {
@@ -70,6 +129,8 @@ test('PostgreSQL staff lookup selects one staff member by ID without credentials
 
 beforeEach(() => {
   resetStore();
+  app.locals.mainApiBaseUrl = 'http://main-api.test';
+  app.locals.mainApiFetch = createMainApiFetch();
   app.locals.locationResolver = async (latitude, longitude) => ({
     latitude,
     longitude,
@@ -91,6 +152,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete app.locals.assistantProvider;
+  delete app.locals.mainApiBaseUrl;
+  delete app.locals.mainApiFetch;
+  delete app.locals.mainApiTimeoutMs;
+  delete app.locals.mainApiSessionVerifier;
+  delete app.locals.mainApiResidentReportLister;
   resetStore();
 });
 
@@ -918,4 +985,528 @@ test('staff triage, assignments, notes, updates, and duplicate links persist wit
   assert.equal(Object.hasOwn(staffSummary, 'staffNotes'), false);
   assert.equal(staffSummary.assignedStaffName, 'Operations Staff');
   assert.equal(staffSummary.department, 'Roads');
+});
+
+test('AI assistant requires a resident and retires resident-to-staff chat routes', async () => {
+  const anonymous = await request('/api/assistant/conversations');
+  assert.equal(anonymous.status, 401);
+
+  const staff = await request('/api/assistant/conversations', {
+    headers: { Authorization: staffAuthorization },
+  });
+  assert.equal(staff.status, 403);
+
+  const retired = await request('/api/chat/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({}),
+  });
+  assert.equal(retired.status, 410);
+  const retiredHistory = await request(`/api/chat/conversations/${crypto.randomUUID()}/messages`, {
+    headers: { Authorization: staffAuthorization },
+  });
+  assert.equal(retiredHistory.status, 410);
+});
+
+test('AI assistant validates the forwarded session cookie with the main API', async () => {
+  let forwardedCookie;
+  const mainApiFetch = createMainApiFetch();
+  app.locals.mainApiFetch = async (url, options) => {
+    forwardedCookie = options.headers.cookie;
+    assert.equal(options.headers.cookie.includes('other=should-not-forward'), false);
+    return mainApiFetch(url, options);
+  };
+  const token = residentAuthorization.replace(/^Bearer\s+/i, '');
+  const response = await request('/api/assistant/conversations', {
+    headers: { Cookie: `msr_session=${token}; other=should-not-forward` },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(forwardedCookie, `msr_session=${token}`);
+  assert.deepEqual(response.body.conversations, []);
+});
+
+test('AI assistant fails safely when main API session verification is unavailable', async () => {
+  app.locals.mainApiFetch = async () => {
+    throw new Error('private upstream details');
+  };
+  const unavailable = await request('/api/assistant/conversations', {
+    headers: { Cookie: 'msr_session=opaque-session' },
+  });
+  assert.equal(unavailable.status, 503);
+  assert.equal(unavailable.body.message, 'Unable to verify account access right now.');
+  assert.equal(JSON.stringify(unavailable.body).includes('private upstream details'), false);
+
+  app.locals.mainApiFetch = async (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => {
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      reject(error);
+    });
+  });
+  app.locals.mainApiTimeoutMs = 5;
+  const timedOut = await request('/api/assistant/conversations', {
+    headers: { Cookie: 'msr_session=opaque-session' },
+  });
+  assert.equal(timedOut.status, 503);
+  assert.equal(timedOut.body.message, 'Unable to verify account access right now.');
+});
+
+test('AI conversations persist turns and remain private to their resident', async () => {
+  const calls = [];
+  app.locals.assistantProvider = async (payload) => {
+    calls.push(payload);
+    return 'Use the formal report page to submit a new issue.';
+  };
+  const store = readStore();
+  store.users.push({
+    id: 'resident-2',
+    name: 'Other Resident',
+    email: 'other-resident@example.test',
+    password: 'scrypt:fixture:hash',
+  });
+  writeStore(store);
+  const otherResidentAuthorization = `Bearer ${createToken({
+    id: 'resident-2',
+    email: 'other-resident@example.test',
+    role: 'resident',
+  })}`;
+
+  const created = await request('/api/assistant/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({}),
+  });
+  assert.equal(created.status, 201);
+  const conversationId = created.body.conversation.id;
+
+  const emptyMessage = await request(`/api/assistant/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ content: '  ' }),
+  });
+  assert.equal(emptyMessage.status, 400);
+
+  const oversized = await request(`/api/assistant/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ content: 'x'.repeat(2001) }),
+  });
+  assert.equal(oversized.status, 400);
+
+  const sent = await request(`/api/assistant/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ content: 'How do I report a pothole?' }),
+  });
+  assert.equal(sent.status, 201);
+  assert.deepEqual(sent.body.messages.map((message) => message.role), ['user', 'assistant']);
+  assert.equal(sent.body.messages[1].content, 'Use the formal report page to submit a new issue.');
+  assert.deepEqual(calls[0].messages, [{ role: 'user', content: 'How do I report a pothole?' }]);
+
+  const outsiderHistory = await request(`/api/assistant/conversations/${conversationId}/messages`, {
+    headers: { Authorization: otherResidentAuthorization },
+  });
+  assert.equal(outsiderHistory.status, 404);
+
+  const outsiderList = await request('/api/assistant/conversations', {
+    headers: { Authorization: otherResidentAuthorization },
+  });
+  assert.equal(outsiderList.status, 200);
+  assert.deepEqual(outsiderList.body.conversations, []);
+
+  const history = await request(`/api/assistant/conversations/${conversationId}/messages`, {
+    headers: { Authorization: residentAuthorization },
+  });
+  assert.equal(history.status, 200);
+  assert.deepEqual(history.body.messages.map((message) => message.content), [
+    'How do I report a pothole?',
+    'Use the formal report page to submit a new issue.',
+  ]);
+});
+
+test('AI report context contains only verified owner-visible report information', async () => {
+  let providerPayload;
+  app.locals.assistantProvider = async (payload) => {
+    providerPayload = payload;
+    return 'Your report is under review.';
+  };
+  const store = readStore();
+  store.reports.push({
+    id: 'private-assistant-report',
+    title: 'Broken light',
+    category: 'Broken Streetlight',
+    description: 'Streetlight is out.',
+    priority: 'High',
+    status: 'Under Review',
+    residentId: 'resident-1',
+    reportedAt: '2026-10-01T12:00:00.000Z',
+    location: { municipality: 'Test Municipality', city: 'Test City' },
+    staffNotes: [{ text: 'internal note' }],
+    assignedStaffName: 'Private Staff',
+    residentUpdates: [{ status: 'Under Review', text: 'Inspection planned.', createdAt: '2026-10-02T12:00:00.000Z' }],
+  });
+  store.reports.push({
+    id: 'another-residents-report',
+    title: 'Private report',
+    residentId: 'resident-2',
+  });
+  store.users.push({
+    id: 'resident-2',
+    name: 'Other Resident',
+    email: 'other-resident@example.test',
+    password: 'scrypt:fixture:hash',
+  });
+  writeStore(store);
+
+  const created = await request('/api/assistant/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({}),
+  });
+  const conversationId = created.body.conversation.id;
+
+  const sent = await request(`/api/assistant/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ content: 'What is happening with my report?', reportReference: 'private-assistant-report' }),
+  });
+  assert.equal(sent.status, 201);
+  assert.deepEqual(providerPayload.reportContext, {
+    reference: 'private-assistant-report',
+    title: 'Broken light',
+    category: 'Broken Streetlight',
+    description: 'Streetlight is out.',
+    priority: 'High',
+    status: 'Under Review',
+    municipality: 'Test Municipality',
+    city: 'Test City',
+    reportedAt: '2026-10-01T12:00:00.000Z',
+    residentUpdates: [{
+      status: 'Under Review',
+      text: 'Inspection planned.',
+      createdAt: '2026-10-02T12:00:00.000Z',
+    }],
+  });
+  assert.equal(JSON.stringify(providerPayload.reportContext).includes('internal note'), false);
+  assert.equal(JSON.stringify(providerPayload.reportContext).includes('Private Staff'), false);
+
+  const otherReportReference = await request(`/api/assistant/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ content: 'What is this report status?', reportReference: 'another-residents-report' }),
+  });
+  assert.equal(otherReportReference.status, 404);
+  assert.equal(providerPayload.reportContext.reference, 'private-assistant-report');
+
+  const otherToken = `Bearer ${createToken({
+    id: 'resident-2',
+    email: 'other-resident@example.test',
+    role: 'resident',
+  })}`;
+  const unauthorized = await request(`/api/assistant/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: otherToken },
+    body: JSON.stringify({ content: 'Tell me the other report status.', reportReference: 'another-residents-report' }),
+  });
+  assert.equal(unauthorized.status, 404);
+  assert.equal(providerPayload.reportContext.reference, 'private-assistant-report');
+});
+
+test('AI assistant message requests are rate limited per client', async () => {
+  app.locals.assistantProvider = async () => 'Verified assistant reply.';
+  const created = await request('/api/assistant/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({}),
+  });
+  const conversationId = created.body.conversation.id;
+  let lastStatus = 0;
+  for (let attempt = 0; attempt < 21; attempt += 1) {
+    const response = await request(`/api/assistant/conversations/${conversationId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: residentAuthorization,
+        'X-Forwarded-For': '198.51.100.200',
+      },
+      body: JSON.stringify({ content: `Question ${attempt}` }),
+    });
+    lastStatus = response.status;
+  }
+  assert.equal(lastStatus, 429);
+});
+
+test('AI provider failures return an error and do not persist a partial turn', async () => {
+  app.locals.assistantProvider = async () => {
+    throw new Error('provider timeout');
+  };
+  const created = await request('/api/assistant/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({}),
+  });
+  const conversationId = created.body.conversation.id;
+  const sent = await request(`/api/assistant/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ content: 'Please help.' }),
+  });
+  assert.equal(sent.status, 503);
+  assert.match(sent.body.message, /temporarily unavailable/);
+
+  const history = await request(`/api/assistant/conversations/${conversationId}/messages`, {
+    headers: { Authorization: residentAuthorization },
+  });
+  assert.equal(history.status, 200);
+  assert.deepEqual(history.body.messages, []);
+});
+
+test.skip('resident and staff can exchange persisted support messages with per-user unread state', async () => {
+  const emptyMessage = await request(`/api/chat/conversations/${crypto.randomUUID()}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ content: '   ' }),
+  });
+  assert.equal(emptyMessage.status, 400);
+
+  const created = await request('/api/chat/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({}),
+  });
+  assert.equal(created.status, 201);
+  const conversationId = created.body.conversation.id;
+
+  const residentMessage = await request(`/api/chat/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ content: 'Please can someone assist?' }),
+  });
+  assert.equal(residentMessage.status, 201);
+  assert.equal(residentMessage.body.message.senderRole, 'resident');
+
+  const waitingForStaff = await request('/api/chat/conversations', {
+    headers: { Authorization: staffAuthorization },
+  });
+  assert.equal(waitingForStaff.body.conversations[0].status, 'awaiting_response');
+
+  const staffMessage = await request(`/api/chat/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: staffAuthorization },
+    body: JSON.stringify({ content: 'We have received your request.' }),
+  });
+  assert.equal(staffMessage.status, 201);
+
+  const residentConversations = await request('/api/chat/conversations', {
+    headers: { Authorization: residentAuthorization },
+  });
+  assert.equal(residentConversations.status, 200);
+  assert.equal(residentConversations.body.conversations[0].unreadCount, 1);
+  assert.equal(residentConversations.body.conversations[0].status, 'open');
+
+  const history = await request(`/api/chat/conversations/${conversationId}/messages`, {
+    headers: { Authorization: residentAuthorization },
+  });
+  assert.equal(history.status, 200);
+  assert.deepEqual(history.body.messages.map((message) => message.content), [
+    'Please can someone assist?',
+    'We have received your request.',
+  ]);
+
+  const markedRead = await request(`/api/chat/conversations/${conversationId}/read`, {
+    method: 'POST',
+    headers: { Authorization: residentAuthorization },
+  });
+  assert.equal(markedRead.status, 200);
+  const refreshed = await request('/api/chat/conversations', {
+    headers: { Authorization: residentAuthorization },
+  });
+  assert.equal(refreshed.body.conversations[0].unreadCount, 0);
+});
+
+test.skip('report-linked support verifies report ownership and current staff municipality authorization', async () => {
+  const store = readStore();
+  store.reports.push({
+    id: 'linked-support-report',
+    title: 'Linked report',
+    residentId: 'resident-1',
+    municipalityId: 'ZA-MOCK',
+    location: { municipalityId: 'ZA-MOCK' },
+  });
+  store.users.push({
+    id: 'resident-2',
+    name: 'Other Resident',
+    email: 'other-resident@example.test',
+    password: 'scrypt:fixture:hash',
+  });
+  store.admins.push({
+    id: 'staff-2',
+    name: 'Unassigned Staff',
+    email: 'unassigned@example.test',
+    password: 'scrypt:fixture:hash',
+    role: 'staff',
+    isActive: true,
+  });
+  writeStore(store);
+
+  const linked = await request('/api/chat/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ reportId: 'linked-support-report' }),
+  });
+  assert.equal(linked.status, 201);
+
+  const otherResidentToken = `Bearer ${createToken({
+    id: 'resident-2',
+    email: 'other-resident@example.test',
+    role: 'resident',
+  })}`;
+  const attemptedCreate = await request('/api/chat/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: otherResidentToken },
+    body: JSON.stringify({ reportId: 'linked-support-report' }),
+  });
+  assert.equal(attemptedCreate.status, 404);
+
+  const outsiderRead = await request(`/api/chat/conversations/${linked.body.conversation.id}/messages`, {
+    headers: { Authorization: otherResidentToken },
+  });
+  assert.equal(outsiderRead.status, 404);
+  const residentList = await request('/api/chat/conversations', {
+    headers: { Authorization: otherResidentToken },
+  });
+  assert.equal(residentList.status, 200);
+  assert.equal(residentList.body.conversations.length, 0);
+
+  const outsiderStaffToken = `Bearer ${createToken({
+    id: 'staff-2',
+    email: 'unassigned@example.test',
+    role: 'staff',
+    municipalityId: 'ZA-MOCK',
+    accessCodeVersion: 1,
+  })}`;
+  const unauthorizedStaffRead = await request(`/api/chat/conversations/${linked.body.conversation.id}/messages`, {
+    headers: { Authorization: outsiderStaffToken },
+  });
+  assert.equal(unauthorizedStaffRead.status, 404);
+
+  const authorizedStaffRead = await request(`/api/chat/conversations/${linked.body.conversation.id}/messages`, {
+    headers: { Authorization: staffAuthorization },
+  });
+  assert.equal(authorizedStaffRead.status, 200);
+  assert.equal(authorizedStaffRead.body.conversation.reportTitle, 'Linked report');
+  const superAdminRead = await request(`/api/chat/conversations/${linked.body.conversation.id}/messages`, {
+    headers: { Authorization: superAdminAuthorization },
+  });
+  assert.equal(superAdminRead.status, 200);
+});
+
+test.skip('Socket.IO rejects unauthenticated clients, authorizes room joins, and delivers messages in real time', async () => {
+  const { createServer } = require('node:http');
+  const { io: connectSocket } = require('socket.io-client');
+  const store = readStore();
+  const conversationId = crypto.randomUUID();
+  store.chatConversations.push({
+    id: conversationId,
+    residentId: 'resident-1',
+    reportId: null,
+    status: 'open',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    lastMessageAt: new Date().toISOString(),
+    messages: [],
+    readAt: {},
+  });
+  store.users.push({
+    id: 'resident-2',
+    name: 'Other Resident',
+    email: 'other-resident@example.test',
+    password: 'scrypt:fixture:hash',
+  });
+  writeStore(store);
+
+  const server = createServer(app);
+  const socketServer = attachChatRealtime(server);
+  await new Promise((resolve) => server.listen(0, resolve));
+  const address = server.address();
+  const url = `http://127.0.0.1:${address.port}`;
+  const residentToken = createToken({
+    id: 'resident-1',
+    name: 'Test Resident',
+    email: 'fixture-resident@example.test',
+    role: 'resident',
+  });
+  const staffToken = createToken({
+    id: 'staff-1',
+    email: 'staff@example.test',
+    role: 'staff',
+    municipalityId: 'ZA-MOCK',
+    accessCodeVersion: 1,
+  });
+
+  function connect(cookie) {
+    const socket = connectSocket(url, {
+      autoConnect: false,
+      transports: ['websocket'],
+      extraHeaders: {
+        Origin: 'http://localhost:3000',
+        ...(cookie ? { Cookie: `msr_session=${cookie}` } : {}),
+      },
+    });
+    return socket;
+  }
+
+  async function waitForConnection(socket) {
+    const connected = new Promise((resolve, reject) => {
+      socket.once('connect', resolve);
+      socket.once('connect_error', reject);
+    });
+    socket.connect();
+    return connected;
+  }
+
+  try {
+    const anonymousSocket = connect();
+    await assert.rejects(waitForConnection(anonymousSocket), /Authentication is required/);
+    anonymousSocket.close();
+
+    const residentSocket = connect(residentToken);
+    const staffSocket = connect(staffToken);
+    await Promise.all([waitForConnection(residentSocket), waitForConnection(staffSocket)]);
+    const joined = await new Promise((resolve) =>
+      residentSocket.emit('chat:join', { conversationId }, resolve),
+    );
+    assert.deepEqual(joined, { ok: true });
+
+    const unauthorizedToken = createToken({
+      id: 'resident-2',
+      email: 'other-resident@example.test',
+      role: 'resident',
+    });
+    const outsiderSocket = connect(unauthorizedToken);
+    await waitForConnection(outsiderSocket);
+    const denied = await new Promise((resolve) =>
+      outsiderSocket.emit('chat:join', { conversationId }, resolve),
+    );
+    assert.equal(denied.ok, false);
+
+    const residentDelivery = new Promise((resolve) => residentSocket.once('chat:message', resolve));
+    const staffDelivery = new Promise((resolve) => staffSocket.once('chat:message', resolve));
+    const sent = await request(`/api/chat/conversations/${conversationId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${residentToken}` },
+      body: JSON.stringify({ content: 'Can you help with this issue?' }),
+    });
+    assert.equal(sent.status, 201);
+    const [residentMessage, staffMessage] = await Promise.all([residentDelivery, staffDelivery]);
+    assert.equal(residentMessage.id, sent.body.message.id);
+    assert.equal(staffMessage.id, sent.body.message.id);
+
+    residentSocket.close();
+    staffSocket.close();
+    outsiderSocket.close();
+  } finally {
+    await new Promise((resolve) => socketServer.close(resolve));
+  }
 });

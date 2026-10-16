@@ -60,13 +60,8 @@ export default function IssueFeedPage() {
             <p role="status" className="p-8 text-center text-sm text-slate-500">Loading reports...</p>
           ) : reportsError ? (
             <p className="p-8 text-center text-sm text-slate-500">The public report map is unavailable right now.</p>
-          ) : reports.length > 0 ? (
-            <ReportMap issues={reports} />
           ) : (
-            <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
-              <p className="text-xl font-bold text-slate-700">{t("noReportsYet")}</p>
-              <p className="mt-2 text-sm text-slate-500">{t("firstReportHint")}</p>
-            </div>
+            <ReportMap issues={reports} emptyMessage={t("firstReportHint")} />
           )}
         </div>
 

@@ -3,17 +3,39 @@
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { use } from "react";
+import { use, useEffect, useState } from "react";
 import { PriorityBadge } from "@/components/PriorityBadge";
 import { ReportMap } from "@/components/ReportMap";
 import { StatusBadge } from "@/components/StatusBadge";
+import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import { useReports } from "@/context/ReportsContext";
 
 export default function IssueDetailsPage({ params }: { params: Promise<{ id: string }> }) {
-  const { reports, isReportsReady } = useReports();
+  const { reports, isReportsReady, fetchMyReports } = useReports();
+  const { residentUser, isAuthReady } = useAuth();
   const { t } = useLanguage();
   const resolvedParams = use(params);
+  const [ownership, setOwnership] = useState<{ ownerId: string; reportId: string; owned: boolean } | null>(null);
+
+  useEffect(() => {
+    if (!isAuthReady || !residentUser) {
+      return;
+    }
+    let active = true;
+    fetchMyReports()
+      .then((myReports) => {
+        if (active) {
+          setOwnership({
+            ownerId: residentUser.id,
+            reportId: resolvedParams.id,
+            owned: myReports.some((item) => item.id === resolvedParams.id),
+          });
+        }
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [fetchMyReports, isAuthReady, residentUser, resolvedParams.id]);
 
   if (!isReportsReady) {
     return (
@@ -27,6 +49,12 @@ export default function IssueDetailsPage({ params }: { params: Promise<{ id: str
   }
 
   const issue = reports.find((item) => item.id === resolvedParams.id);
+  const isOwnedByResident = Boolean(
+    residentUser &&
+    ownership?.ownerId === residentUser.id &&
+    ownership.reportId === resolvedParams.id &&
+    ownership.owned,
+  );
 
   if (!issue) {
     notFound();
@@ -44,6 +72,18 @@ export default function IssueDetailsPage({ params }: { params: Promise<{ id: str
             {t("backToFeed")}
           </Link>
         </div>
+
+        {isOwnedByResident && (
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent("municipal-assistant:open", {
+              detail: { reportReference: issue.id },
+            }))}
+            className="mb-6 rounded-full border border-emerald-700 px-4 py-2 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-50"
+          >
+            Ask the AI Assistant about this report
+          </button>
+        )}
 
         <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
           <div className="space-y-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">

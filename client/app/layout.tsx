@@ -6,6 +6,7 @@ import { NavBar } from "@/components/NavBar";
 import { AuthProvider } from "@/context/AuthContext";
 import { LanguageProvider } from "@/context/LanguageContext";
 import { ReportsProvider } from "@/context/ReportsContext";
+import { AIAssistant } from "@/components/AIAssistant";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -36,6 +37,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
                 <NavBar />
                 {children}
                 <Footer />
+                <AIAssistant />
               </div>
             </ReportsProvider>
           </AuthProvider>

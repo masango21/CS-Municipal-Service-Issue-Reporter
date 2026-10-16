@@ -24,10 +24,13 @@ This repository contains deployment scaffolding, but no service is deployed or v
 - `MDB_MUNICIPALITY_FEATURE_LAYER_URL`: optional MDB point-in-polygon layer override. Verify active municipal demarcation boundaries before public launch; current item metadata says “2021” while its service description says “2018”.
 - `REVERSE_GEOCODER_URL`, `GEOCODING_USER_AGENT`, `GEOCODING_CONTACT`: server-side reverse-geocoder configuration and identifying contact. The public Nominatim endpoint is rate-limited to one request/second/application and subject to its usage policy; use a suitable provider or self-host for public traffic.
 - `ENABLE_MUNICIPALITY_SCOPING_MIGRATION=true`: set only after migration 002 passes disposable-PostgreSQL verification and production change approval. Without it, startup refuses to apply the new migration.
+- `ENABLE_AI_ASSISTANT_MIGRATION=true`: set only after migration 004 passes disposable-PostgreSQL verification and production change approval. A pending legacy migration 003 is skipped unless its own opt-in flag is enabled.
 - `CLIENT_ORIGIN`: exact HTTPS frontend origin.
 - `DATABASE_SSL=true`; use `SESSION_COOKIE_SAME_SITE=none` for cross-site Vercel/Render hostnames or `lax` for HTTPS on same-site custom domains.
 
-Production startup refuses to use JSON file storage. The API applies versioned SQL files under `server/sql/migrations/` at startup; migration 002 is explicitly gated after disposable-database validation and production approval. The API does not seed reports, residents, or staff accounts.
+Production startup refuses to use JSON file storage. The API applies versioned SQL files under `server/sql/migrations/` at startup; migrations 002 and 004 are explicitly gated after disposable-database validation and production approval. The API does not seed reports, residents, or staff accounts.
+
+The AI Assistant's Ollama configuration in `server/.env.example` is for local development. A locally hosted Ollama instance is not reachable by a separately hosted Render API; production AI hosting requires an explicitly secured, reachable model service and approved network configuration. Do not expose a local Ollama endpoint publicly or point a deployment at a developer workstation.
 
 ## Vercel Client
 

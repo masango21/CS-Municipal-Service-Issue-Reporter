@@ -115,13 +115,10 @@ export default function ResidentDashboardPage() {
               <h2 className="mb-4 text-xl font-bold text-slate-900">{t("yourIssueLocations")}</h2>
               {!reportsReady && !reportsError ? (
                 <p role="status" className="p-8 text-center text-sm text-slate-500">Loading your reports...</p>
-              ) : reports.length > 0 ? (
-                <ReportMap issues={reports} compact />
+              ) : reportsError ? (
+                <p role="alert" className="p-8 text-center text-sm text-rose-700">Your report locations are temporarily unavailable.</p>
               ) : (
-                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
-                  <p className="text-lg font-semibold text-slate-700">{t("noResidentReports")}</p>
-                  <p className="mt-2 text-sm text-slate-500">{t("residentReportsHint")}</p>
-                </div>
+                <ReportMap issues={reports} compact exploreGeography emptyMessage={t("residentReportsHint")} />
               )}
             </div>
           </div>
