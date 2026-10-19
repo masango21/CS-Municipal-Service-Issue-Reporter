@@ -54,13 +54,39 @@ const { AssistantProviderError, getAssistantReply } = require('./ai-assistant');
 const app = express();
 const PORT = process.env.PORT || 4000;
 const SESSION_COOKIE = 'msr_session';
-const configuredClientOrigins = (process.env.CLIENT_ORIGIN || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3000'))
-  .split(',')
-  .map((origin) => origin.trim().replace(/\/+$/, ''))
-  .filter(Boolean);
-const CLIENT_ORIGINS = process.env.NODE_ENV === 'production'
-  ? configuredClientOrigins
-  : [...new Set([...configuredClientOrigins, 'http://localhost:3000', 'http://127.0.0.1:3000'])];
+const MAX_EVIDENCE_IMAGE_BYTES = 3 * 1024 * 1024;
+
+function parseClientOrigins(value, production = process.env.NODE_ENV === 'production') {
+  const configuredOrigins = String(value || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .map((origin) => {
+      let parsed;
+      try {
+        parsed = new URL(origin);
+      } catch {
+        throw new Error('CLIENT_ORIGIN must contain valid absolute HTTP(S) origins.');
+      }
+      if (!['http:', 'https:'].includes(parsed.protocol) ||
+          parsed.username || parsed.password ||
+          parsed.pathname !== '/' || parsed.search || parsed.hash ||
+          (production && parsed.protocol !== 'https:')) {
+        throw new Error('CLIENT_ORIGIN entries must be exact origins without paths or credentials; production origins must use HTTPS.');
+      }
+      return parsed.origin;
+    });
+
+  if (production && configuredOrigins.length === 0) {
+    throw new Error('CLIENT_ORIGIN must contain at least one trusted HTTPS frontend origin in production.');
+  }
+
+  return production
+    ? [...new Set(configuredOrigins)]
+    : [...new Set([...configuredOrigins, 'http://localhost:3000', 'http://127.0.0.1:3000'])];
+}
+
+const CLIENT_ORIGINS = parseClientOrigins(process.env.CLIENT_ORIGIN);
 const SESSION_MAX_AGE_MS = 60 * 60 * 1000;
 const STORE_PATH = process.env.DATA_STORE_PATH || path.join(__dirname, 'data', 'store.json');
 const DATA_DIR = path.dirname(STORE_PATH);
@@ -488,12 +514,38 @@ function validateIssuePayload(payload) {
     return 'Choose a valid priority';
   }
 
-  if (payload.image) {
-    if (typeof payload.image !== 'string' || payload.image.length > 4_200_000) {
+  if (payload.image !== undefined && payload.image !== null && payload.image !== '') {
+    if (typeof payload.image !== 'string') {
+      return 'Evidence must be a JPEG, PNG, or WebP image';
+    }
+    const match = payload.image.match(/^data:image\/(jpeg|png|webp);base64,([a-z0-9+/]+={0,2})$/i);
+    if (!match) return 'Evidence must be a JPEG, PNG, or WebP image';
+
+    const [, imageType, encodedImage] = match;
+    const maximumEncodedLength = Math.ceil(MAX_EVIDENCE_IMAGE_BYTES / 3) * 4;
+    if (encodedImage.length > maximumEncodedLength) {
       return 'Evidence images must be 3 MB or smaller';
     }
-    if (!/^data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/]+={0,2}$/i.test(payload.image)) {
-      return 'Evidence must be a JPEG, PNG, or WebP image';
+
+    const imageBytes = Buffer.from(encodedImage, 'base64');
+    if (imageBytes.length > MAX_EVIDENCE_IMAGE_BYTES) {
+      return 'Evidence images must be 3 MB or smaller';
+    }
+    if (!imageBytes.length || imageBytes.toString('base64') !== encodedImage) {
+      return 'Evidence must be a valid JPEG, PNG, or WebP image';
+    }
+
+    const signatures = {
+      jpeg: imageBytes.length >= 3 &&
+        imageBytes[0] === 0xff && imageBytes[1] === 0xd8 && imageBytes[2] === 0xff,
+      png: imageBytes.length >= 8 &&
+        imageBytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+      webp: imageBytes.length >= 12 &&
+        imageBytes.toString('ascii', 0, 4) === 'RIFF' &&
+        imageBytes.toString('ascii', 8, 12) === 'WEBP',
+    };
+    if (!signatures[imageType.toLowerCase()]) {
+      return 'Evidence must be a valid JPEG, PNG, or WebP image';
     }
   }
 
@@ -738,6 +790,7 @@ module.exports = {
   makeId,
   createToken,
   requireAdmin,
+  parseClientOrigins,
 };
 
 app.locals.locationResolver = resolveLocation;
@@ -852,7 +905,8 @@ app.post('/api/location/resolve', requireResident, locationRateLimiter, async (r
     if (!location) {
       return res.status(422).json({ message: "We couldn't determine the municipality for this location. Please move the pin and try again." });
     }
-    await saveMunicipalityRecord({
+    const municipalitySaver = app.locals.municipalitySaver || saveMunicipalityRecord;
+    await municipalitySaver({
       id: location.municipalityId,
       code: location.municipalityId,
       name: location.municipality,
@@ -863,7 +917,9 @@ app.post('/api/location/resolve', requireResident, locationRateLimiter, async (r
     });
     return res.status(200).json({ location });
   } catch (error) {
-    console.error('Location resolution failed:', error.message);
+    console.error('Location resolution failed:', {
+      code: typeof error?.code === 'string' ? error.code : 'unknown',
+    });
     return res.status(503).json({ message: 'Location services are temporarily unavailable. Please try again.' });
   }
 });
@@ -1480,11 +1536,16 @@ app.post('/api/reports', reportRateLimiter, requireResident, async (req, res) =>
     return res.status(400).json({ message: validationError });
   }
 
+  const payload = {
+    ...req.body,
+    title: req.body.title.trim(),
+    description: req.body.description.trim(),
+  };
   let resolvedLocation;
   try {
     resolvedLocation = await app.locals.locationResolver(
-      Number(req.body.location.latitude),
-      Number(req.body.location.longitude),
+      payload.location.latitude,
+      payload.location.longitude,
     );
     if (!resolvedLocation) {
       return res.status(422).json({ message: "We couldn't determine the municipality for this location. Please move the pin and try again." });
@@ -1494,59 +1555,81 @@ app.post('/api/reports', reportRateLimiter, requireResident, async (req, res) =>
     return res.status(503).json({ message: 'Location services are temporarily unavailable. Please try again.' });
   }
 
-  const municipality = await saveMunicipalityRecord({
-    id: resolvedLocation.municipalityId,
-    code: resolvedLocation.municipalityId,
-    name: resolvedLocation.municipality,
-    province: resolvedLocation.province,
-    type: resolvedLocation.municipalityType,
-    boundarySource: resolvedLocation.boundarySource,
-    boundaryDataset: resolvedLocation.boundaryDataset,
-  });
+  let municipality;
+  try {
+    const municipalitySaver = app.locals.municipalitySaver || saveMunicipalityRecord;
+    municipality = await municipalitySaver({
+      id: resolvedLocation.municipalityId,
+      code: resolvedLocation.municipalityId,
+      name: resolvedLocation.municipality,
+      province: resolvedLocation.province,
+      type: resolvedLocation.municipalityType,
+      boundarySource: resolvedLocation.boundarySource,
+      boundaryDataset: resolvedLocation.boundaryDataset,
+    });
+  } catch (error) {
+    console.error('Report municipality persistence failed:', {
+      code: typeof error?.code === 'string' ? error.code : 'unknown',
+    });
+    return res.status(503).json({ message: 'Report storage is temporarily unavailable. Please try again.' });
+  }
   if (!municipality?.active) return res.status(422).json({ message: 'This municipality is not accepting reports right now.' });
   resolvedLocation.municipalityId = municipality.id;
 
-  if (pool) {
+  if (pool || app.locals.reportCreator) {
     try {
-      const report = await createReportInDb({
-        title: req.body.title,
-        category: req.body.category,
-        description: req.body.description,
+      const reportCreator = app.locals.reportCreator || createReportInDb;
+      const report = await reportCreator({
+        title: payload.title,
+        category: payload.category,
+        description: payload.description,
         location: resolvedLocation,
-        priority: req.body.priority,
+        priority: payload.priority,
         reportedBy: req.auth.name,
         residentId: req.auth.id,
-        image: req.body.image,
+        image: payload.image,
       });
 
+      if (!report) {
+        throw new Error('Report storage returned no report.');
+      }
       return res.status(201).json({
         message: 'Report created successfully',
         report: publicReport(report),
       });
     } catch (error) {
-      console.error('Database report creation failed:', error);
-      return res.status(500).json({ message: 'Failed to create report in database' });
+      console.error('Database report creation failed:', {
+        code: typeof error?.code === 'string' ? error.code : 'unknown',
+      });
+      return res.status(503).json({ message: 'Report storage is temporarily unavailable. Please try again.' });
     }
   }
 
   const store = readStore();
   const newReport = {
     id: makeId('MSR'),
-    title: req.body.title,
-    category: req.body.category,
-    description: req.body.description,
+    title: payload.title,
+    category: payload.category,
+    description: payload.description,
     municipalityId: municipality.id,
     location: resolvedLocation,
-    priority: req.body.priority || 'Medium',
+    priority: payload.priority || 'Medium',
     status: 'Reported',
     reportedBy: req.auth.name,
     residentId: req.auth.id,
     reportedAt: new Date().toISOString(),
-    image: req.body.image || undefined,
+    image: payload.image || undefined,
   };
 
   store.reports.unshift(newReport);
-  writeStore(store);
+  try {
+    writeStore(store);
+  } catch (error) {
+    console.error('Local report persistence failed:', {
+      code: typeof error?.code === 'string' ? error.code : 'unknown',
+    });
+    return res.status(503).json({ message: 'Report storage is temporarily unavailable. Please try again.' });
+  }
 
   return res.status(201).json({
     message: 'Report created successfully',
@@ -1964,7 +2047,17 @@ app.post('/api/admin/login', async (req, res) => {
 });
 
 app.use((error, req, res, next) => {
-  console.error('Unhandled server error:', error);
+  if (res.headersSent) return next(error);
+  if (error?.type === 'entity.too.large') {
+    return res.status(413).json({ message: 'Request body exceeds the allowed size.' });
+  }
+  if (error?.type === 'entity.parse.failed') {
+    return res.status(400).json({ message: 'Request body must be valid JSON.' });
+  }
+  console.error('Unhandled server error:', {
+    name: typeof error?.name === 'string' ? error.name : 'Error',
+    code: typeof error?.code === 'string' ? error.code : 'unknown',
+  });
   res.status(500).json({ message: 'Internal server error' });
 });
 

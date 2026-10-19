@@ -20,7 +20,7 @@ Set these values in ignored `.env` for local development or in the hosting provi
 - `ADMIN_REGISTRATION_KEYS`: comma-separated staff invite keys. Rotate before public launch.
 - `DATABASE_URL`: PostgreSQL connection string. Required in production; optional only for local file-store development.
 - `DATABASE_SSL`: defaults to certificate-verified TLS. Set `false` only for a trusted local PostgreSQL instance.
-- `CLIENT_ORIGIN`: exact frontend origin, including scheme.
+- `CLIENT_ORIGIN`: one or more exact frontend origins, comma-separated and including the scheme (for example `https://reports.example.gov.za,https://preview.example.gov.za`). Do not include paths or credentials. Production requires at least one HTTPS origin; cookie-authenticated writes reject missing and untrusted `Origin` headers.
 - `SESSION_COOKIE_SAME_SITE`: defaults to `lax`; use frontend/API custom domains under the same registrable domain.
 - `SUPER_ADMIN_BOOTSTRAP_TOKEN`: one-time high-entropy secret for first super-admin setup. Remove it from the server environment after bootstrap.
 - `OLLAMA_BASE_URL`: Ollama API base URL. Local development defaults to `http://127.0.0.1:11434`; production must explicitly configure an HTTPS inference-service URL.

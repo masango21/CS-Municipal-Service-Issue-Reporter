@@ -1,6 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { listOfficialMunicipalities, resolveMunicipality, reverseGeocode, validateCoordinates } = require('../location');
+const {
+  listOfficialMunicipalities,
+  resolveLocation,
+  resolveMunicipality,
+  reverseGeocode,
+  validateCoordinates,
+} = require('../location');
 
 test('validates the existing South African service bounds', () => {
   assert.equal(validateCoordinates(-25.7, 28.2), true);
@@ -87,6 +93,36 @@ test('reverse geocodes with the configured endpoint and caches successful result
   assert.deepEqual(first, second);
   assert.equal(first.city, 'Example');
   assert.equal(callCount, 1);
+});
+
+test('location resolution keeps the official municipality when address lookup fails', async () => {
+  const location = await resolveLocation(-25.7, 28.2, {
+    layerUrl: 'https://mdb.example.test/FeatureServer/0',
+    endpoint: 'https://offline-geocoder.example.test/reverse',
+    minIntervalMs: 0,
+    fetchImpl: async (url) => {
+      if (new URL(url).hostname === 'mdb.example.test') {
+        return {
+          ok: true,
+          json: async () => ({ features: [{ attributes: {
+            MUNICNAME: 'Example Municipality',
+            NAMECODE: 'ZA-EXAMPLE',
+            PROVINCE: 'Gauteng',
+            CATEGORY: 'B',
+          } }] }),
+        };
+      }
+      return { ok: false, json: async () => ({}) };
+    },
+  });
+
+  assert.equal(location.latitude, -25.7);
+  assert.equal(location.longitude, 28.2);
+  assert.equal(location.municipality, 'Example Municipality');
+  assert.equal(location.municipalityId, 'ZA-EXAMPLE');
+  assert.equal(location.city, 'Example Municipality');
+  assert.equal(location.address, '');
+  assert.equal(location.geocodingAttribution, '');
 });
 
 test('lists only municipality records supplied by the MDB layer', async () => {

@@ -115,15 +115,23 @@ export function ReportsProvider({ children }: { children: ReactNode }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...draft }),
     });
-    const payload = (await response.json()) as { report?: Issue; message?: string };
-    if (!response.ok || !payload.report) {
-      throw new Error(payload.message ?? "Your report could not be saved. Please try again.");
+    let payload: { report?: Issue; message?: string } | null = null;
+    try {
+      payload = await response.json() as { report?: Issue; message?: string };
+    } catch {
+      if (response.ok) {
+        throw new Error("The report service returned an invalid response. Please try again.");
+      }
+    }
+    if (!response.ok || !payload?.report) {
+      throw new Error(payload?.message ?? "Your report could not be saved. Please try again.");
     }
 
+    const createdReport = payload.report;
     reportMutationVersion.current += 1;
-    setReports((current) => [payload.report!, ...current.filter((item) => item.id !== payload.report!.id)]);
+    setReports((current) => [createdReport, ...current.filter((item) => item.id !== createdReport.id)]);
     setReportsError(null);
-    return payload.report;
+    return createdReport;
   };
 
   const fetchMyReports = useCallback(async () => {

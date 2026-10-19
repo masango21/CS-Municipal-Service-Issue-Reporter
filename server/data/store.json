@@ -1446,7 +1446,7 @@
       "accessCodeHash": null,
       "accessCodeVersion": 1,
       "createdAt": "2026-09-30T13:03:37.742Z",
-      "updatedAt": "2026-10-01T12:26:30.067Z"
+      "updatedAt": "2026-10-19T13:50:15.627Z"
     },
     {
       "id": "KZN327",
@@ -3304,6 +3304,50 @@
   ],
   "chatConversations": [],
   "aiAssistantConversations": [
+    {
+      "id": "51cdeac3-278d-43b5-856f-a751dc926efd",
+      "residentId": "USR-1790753528499-f27c54",
+      "createdAt": "2026-10-19T13:50:26.037Z",
+      "updatedAt": "2026-10-19T13:50:35.086Z",
+      "messages": [
+        {
+          "id": "6cddd83c-17a3-42be-9532-d7c516ca1637",
+          "conversationId": "51cdeac3-278d-43b5-856f-a751dc926efd",
+          "role": "user",
+          "content": "How can I check a report I submitted?",
+          "createdAt": "2026-10-19T13:50:35.086Z"
+        },
+        {
+          "id": "588642f2-b0a2-401d-bb3a-4b093247241f",
+          "conversationId": "51cdeac3-278d-43b5-856f-a751dc926efd",
+          "role": "assistant",
+          "content": "To check a report you submitted, follow these steps:\n\n1. Go to the /report page.\n2. Click on \"My Reports\" from the left menu.\n3. Search for the report by its reference.\n4. Click on the report to view its details.\n\nPlease note that the application does not store the status of the report after submission. It only displays the status as reported, assigned, under review, in progress, resolved, or closed, if verified data in the current request explicitly shows so.",
+          "createdAt": "2026-10-19T13:50:35.086Z"
+        }
+      ]
+    },
+    {
+      "id": "f7ec582d-b249-484d-8ab3-d1d52a5a399b",
+      "residentId": "USR-1790753528499-f27c54",
+      "createdAt": "2026-10-19T13:49:47.406Z",
+      "updatedAt": "2026-10-19T13:49:56.482Z",
+      "messages": [
+        {
+          "id": "09e5b21b-65d9-4c6a-a48b-d42e8d3ec092",
+          "conversationId": "f7ec582d-b249-484d-8ab3-d1d52a5a399b",
+          "role": "user",
+          "content": "How do I select my municipality?",
+          "createdAt": "2026-10-19T13:49:56.482Z"
+        },
+        {
+          "id": "24bf7e62-6baf-4e14-b58e-62b7e97b1f67",
+          "conversationId": "f7ec582d-b249-484d-8ab3-d1d52a5a399b",
+          "role": "assistant",
+          "content": "I don't know. The application does not specify how to select the municipality.",
+          "createdAt": "2026-10-19T13:49:56.482Z"
+        }
+      ]
+    },
     {
       "id": "074c7559-c4ec-4412-9c0c-e940561d7928",
       "residentId": "USR-1790753528499-f27c54",

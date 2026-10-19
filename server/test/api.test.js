@@ -18,7 +18,7 @@ const {
   validateMigrationOptIns,
 } = require('../db');
 
-const { app, readStore, writeStore, createToken } = require('../index.js');
+const { app, readStore, writeStore, createToken, parseClientOrigins } = require('../index.js');
 app.set('trust proxy', 1);
 const staffAuthorization = `Bearer ${createToken({
   id: 'staff-1', email: 'staff@example.test', role: 'staff', municipalityId: 'ZA-MOCK', accessCodeVersion: 1,
@@ -216,6 +216,8 @@ afterEach(() => {
   delete app.locals.mainApiTimeoutMs;
   delete app.locals.mainApiSessionVerifier;
   delete app.locals.mainApiResidentReportLister;
+  delete app.locals.municipalitySaver;
+  delete app.locals.reportCreator;
   resetStore();
 });
 
@@ -262,6 +264,76 @@ test('CORS allows local frontend origins in non-production and rejects unapprove
 
   const unapproved = await request('/api/health', { headers: { Origin: 'https://unapproved.invalid' } });
   assert.equal(unapproved.headers.get('access-control-allow-origin'), null);
+});
+
+test('production client origins are exact trusted HTTPS origins', () => {
+  assert.deepEqual(
+    parseClientOrigins('https://client.example, https://preview.example/', true),
+    ['https://client.example', 'https://preview.example'],
+  );
+  assert.throws(() => parseClientOrigins('', true), /at least one trusted HTTPS frontend origin/);
+  assert.throws(() => parseClientOrigins('http://client.example', true), /production origins must use HTTPS/);
+  assert.throws(() => parseClientOrigins('https://client.example/path', true), /exact origins/);
+  assert.throws(() => parseClientOrigins('https://user:pass@client.example', true), /exact origins/);
+});
+
+test('cookie-authenticated writes accept an allowed Origin and reject untrusted or missing Origin', async () => {
+  const token = createToken({
+    id: 'resident-1',
+    name: 'Test Resident',
+    email: 'fixture-resident@example.test',
+    role: 'resident',
+  });
+  const cookie = `msr_session=${token}`;
+  const trusted = await request('/api/auth/logout', {
+    method: 'POST',
+    headers: { Cookie: cookie, Origin: 'http://localhost:3000' },
+  });
+  assert.equal(trusted.status, 200);
+
+  const reportPayload = {
+    title: 'Trusted origin submission',
+    description: 'A report from the configured frontend origin.',
+    category: 'Pothole',
+    location: { latitude: -25.7, longitude: 28.2 },
+    priority: 'High',
+  };
+  const trustedReport = await request('/api/reports', {
+    method: 'POST',
+    headers: {
+      Cookie: cookie,
+      Origin: 'http://localhost:3000',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(reportPayload),
+  });
+  assert.equal(trustedReport.status, 201);
+
+  const untrusted = await request('/api/auth/logout', {
+    method: 'POST',
+    headers: { Cookie: cookie, Origin: 'https://unapproved.invalid' },
+  });
+  assert.equal(untrusted.status, 403);
+  assert.equal(untrusted.body.message, 'A valid same-origin request is required');
+
+  const missingOrigin = await request('/api/auth/logout', {
+    method: 'POST',
+    headers: { Cookie: cookie },
+  });
+  assert.equal(missingOrigin.status, 403);
+  assert.equal(missingOrigin.body.message, 'A valid same-origin request is required');
+
+  const untrustedReport = await request('/api/reports', {
+    method: 'POST',
+    headers: {
+      Cookie: cookie,
+      Origin: 'https://unapproved.invalid',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(reportPayload),
+  });
+  assert.equal(untrustedReport.status, 403);
+  assert.equal(readStore().reports.length, 1);
 });
 
 test('health endpoint reports zero reports at startup', async () => {
@@ -649,6 +721,40 @@ test('report submission rejects coordinates without an authoritative municipalit
   assert.equal(readStore().reports.length, 0);
 });
 
+test('location lookup returns only authoritative municipality data and reports provider outages safely', async () => {
+  const payload = { latitude: -25.7, longitude: 28.2 };
+  const resolved = await request('/api/location/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify(payload),
+  });
+  assert.equal(resolved.status, 200);
+  assert.equal(resolved.body.location.latitude, payload.latitude);
+  assert.equal(resolved.body.location.longitude, payload.longitude);
+  assert.equal(resolved.body.location.municipality, testMunicipality.name);
+  assert.equal(resolved.body.location.address, 'Test address');
+
+  app.locals.locationResolver = async () => {
+    throw new Error('private geocoder endpoint details');
+  };
+  let loggedError;
+  const originalConsoleError = console.error;
+  console.error = (...args) => { loggedError = args; };
+  let unavailable;
+  try {
+    unavailable = await request('/api/location/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+      body: JSON.stringify(payload),
+    });
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.equal(unavailable.status, 503);
+  assert.equal(unavailable.body.message, 'Location services are temporarily unavailable. Please try again.');
+  assert.doesNotMatch(JSON.stringify(loggedError), /private geocoder endpoint details/);
+});
+
 test('categories endpoint returns the issue taxonomy', async () => {
   const response = await request('/api/categories');
   assert.equal(response.status, 200);
@@ -691,8 +797,14 @@ test('report lifecycle creates and removes a report without leaving seeded data 
   assert.equal(createResponse.body.report.title, payload.title);
   assert.equal(createResponse.body.report.status, 'Reported');
   assert.equal(createResponse.body.report.location.latitude, payload.location.latitude);
+  assert.equal(createResponse.body.report.location.longitude, payload.location.longitude);
+  assert.equal(createResponse.body.report.location.address, 'Test address');
+  assert.equal(createResponse.body.report.location.municipality, testMunicipality.name);
+  assert.equal(createResponse.body.report.priority, payload.priority);
+  assert.equal(createResponse.body.report.category, payload.category);
   assert.equal(createResponse.body.report.reportedBy, undefined);
   assert.equal(createResponse.body.report.residentId, undefined);
+  assert.equal(readStore().reports[0].residentId, 'resident-1');
 
   const privateReports = await request('/api/my/reports', {
     headers: { Authorization: residentAuthorization },
@@ -744,6 +856,75 @@ test('evidence uploads reject unapproved formats and images over the size limit'
     body: JSON.stringify({ ...payload, image: `data:image/png;base64,${'A'.repeat(4_200_001)}` }),
   });
   assert.equal(oversized.status, 400);
+
+  const mismatchedBytes = await request('/api/reports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ ...payload, image: 'data:image/png;base64,SGVsbG8=' }),
+  });
+  assert.equal(mismatchedBytes.status, 400);
+
+  const validPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nQioAAAAASUVORK5CYII=';
+  const accepted = await request('/api/reports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({ ...payload, image: validPng }),
+  });
+  assert.equal(accepted.status, 201);
+  assert.equal(readStore().reports[0].image, validPng);
+});
+
+test('report storage failures return a safe service-unavailable response and do not create a report', async () => {
+  app.locals.municipalitySaver = async () => testMunicipality;
+  app.locals.reportCreator = async () => {
+    const error = new Error('sensitive database connection details');
+    error.code = '08006';
+    throw error;
+  };
+  const payload = {
+    title: 'Storage outage test',
+    description: 'This report must not appear saved when storage is unavailable.',
+    category: 'Pothole',
+    location: { latitude: -25.7, longitude: 28.2 },
+    priority: 'Medium',
+  };
+  let loggedError;
+  const originalConsoleError = console.error;
+  console.error = (...args) => { loggedError = args; };
+  let response;
+  try {
+    response = await request('/api/reports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+      body: JSON.stringify(payload),
+    });
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.equal(response.status, 503);
+  assert.equal(response.body.message, 'Report storage is temporarily unavailable. Please try again.');
+  assert.equal(readStore().reports.length, 0);
+  assert.doesNotMatch(JSON.stringify(loggedError), /sensitive database connection details/);
+});
+
+test('malformed JSON receives a safe client error', async () => {
+  const response = await request('/api/reports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: '{',
+  });
+  assert.equal(response.status, 400);
+  assert.equal(response.body.message, 'Request body must be valid JSON.');
+});
+
+test('oversized JSON receives HTTP 413 with a safe response', async () => {
+  const response = await request('/api/reports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ padding: 'x'.repeat(5 * 1024 * 1024) }),
+  });
+  assert.equal(response.status, 413);
+  assert.equal(response.body.message, 'Request body exceeds the allowed size.');
 });
 
 test('resident reports reject invalid categories and coordinates outside South Africa', async () => {
@@ -767,6 +948,60 @@ test('resident reports reject invalid categories and coordinates outside South A
     body: JSON.stringify({ ...payload, location: { ...payload.location, latitude: 40, longitude: -74 } }),
   });
   assert.equal(outsideSouthAfrica.status, 400);
+});
+
+test('report submission rejects blank or overlong text and invalid priorities', async () => {
+  const payload = {
+    title: 'Road damage',
+    description: 'A detailed description of the damaged road.',
+    category: 'Pothole',
+    location: { latitude: -25.7, longitude: 28.2 },
+    priority: 'High',
+  };
+  const invalidPayloads = [
+    { ...payload, title: '   ' },
+    { ...payload, title: 'x'.repeat(161) },
+    { ...payload, description: '   ' },
+    { ...payload, description: 'x'.repeat(5001) },
+    { ...payload, priority: 'Urgent' },
+  ];
+
+  for (const invalidPayload of invalidPayloads) {
+    const response = await request('/api/reports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+      body: JSON.stringify(invalidPayload),
+    });
+    assert.equal(response.status, 400);
+  }
+  assert.equal(readStore().reports.length, 0);
+});
+
+test('evidence accepts supported image signatures for JPEG, PNG, and WebP', async () => {
+  const payload = {
+    title: 'Supported evidence type',
+    description: 'The selected image has a supported image signature.',
+    category: 'Pothole',
+    location: { latitude: -25.7, longitude: 28.2 },
+  };
+  const images = [
+    ['jpeg', Buffer.from([0xff, 0xd8, 0xff, 0xd9])],
+    ['png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
+    ['webp', Buffer.from('RIFF\x04\x00\x00\x00WEBP', 'binary')],
+  ];
+
+  for (const [type, bytes] of images) {
+    const response = await request('/api/reports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+      body: JSON.stringify({
+        ...payload,
+        title: `${payload.title} ${type}`,
+        image: `data:image/${type};base64,${bytes.toString('base64')}`,
+      }),
+    });
+    assert.equal(response.status, 201, `${type} image should be accepted`);
+  }
 });
 
 test('reports endpoint supports category and status filters and updates status correctly', async () => {

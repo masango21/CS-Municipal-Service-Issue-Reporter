@@ -18,11 +18,11 @@ services:
       - key: ADMIN_REGISTRATION_KEYS
         sync: false
       - key: CLIENT_ORIGIN
-        value: https://cs-municipal-service-issue-reporter.vercel.app,https://cs-municipal-service-issue-reporter-fyjkluqj8.vercel.app
+        value: https://cs-municipal-service-issue-reporter.vercel.app,https://cs-municipal-service-issue-reporter-fyjkluqj8.vercel.app,https://cs-municipal-service-issue-rep-kduvpdqcv.vercel.app
       - key: SESSION_COOKIE_SAME_SITE
         value: none
       - key: MAIN_API_BASE_URL
-        sync: false
+        sync: true
       - key: OLLAMA_BASE_URL
         sync: false
       - key: OLLAMA_MODEL

@@ -26,6 +26,12 @@ const southAfricaBounds: [[number, number], [number, number]] = [
   [-35.0, 16.0],
   [-22.0, 33.0],
 ];
+const southAfricaServiceBounds = {
+  minLatitude: -35.5,
+  maxLatitude: -22,
+  minLongitude: 16,
+  maxLongitude: 33,
+};
 
 type LocationData = {
   latitude: number;
@@ -108,20 +114,19 @@ function buildCategoryIcon(category: string, isSelected = false) {
   });
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function MapClickHandler({ onSelectLocation }: { onSelectLocation?: MapViewProps["onSelectLocation"] }) {
   useMapEvents({
     click(event) {
       if (!onSelectLocation) return;
 
-      const location = {
+      onSelectLocation({
         latitude: Number(event.latlng.lat.toFixed(6)),
         longitude: Number(event.latlng.lng.toFixed(6)),
-        city: "South Africa",
-        municipality: "South Africa",
-        address: "Selected location",
-      };
-
-      onSelectLocation(location);
+      });
     },
   });
 
@@ -551,6 +556,8 @@ export function MapView({
   const [searchText, setSearchText] = useState("");
   const [currentLocation, setCurrentLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [searchError, setSearchError] = useState("");
+  const [isSearching, setIsSearching] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
   const [zoom, setZoom] = useState(6);
   const validIssues = useMemo(() => uniqueLocatedIssues(issues), [issues]);
   const clusters = useMemo(
@@ -565,72 +572,103 @@ export function MapView({
   const hasClusters = clusters.some((cluster) => cluster.issues.length > 1);
   const hasUnmappableReports = issues.some((issue) => !isValidReportLocation(issue));
 
+  const selectLocation = (location: LocationData, shouldCenter = false) => {
+    setCurrentLocation(shouldCenter
+      ? { latitude: location.latitude, longitude: location.longitude }
+      : null);
+    onSelectLocation?.(location);
+  };
+
   const handleSearch = async () => {
     const query = searchText.trim();
-    if (!query) {
+    if (!query || isSearching) {
       setSearchError("Please enter a location to search.");
       return;
     }
 
     setSearchError("");
+    setIsSearching(true);
 
     try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(query + ", South Africa")}`,
-      );
-      const results = await response.json();
+      const searchUrl = new URL("https://nominatim.openstreetmap.org/search");
+      searchUrl.searchParams.set("format", "jsonv2");
+      searchUrl.searchParams.set("countrycodes", "za");
+      searchUrl.searchParams.set("limit", "1");
+      searchUrl.searchParams.set("q", query);
+      const response = await fetch(searchUrl);
+      if (!response.ok) throw new Error("Search service unavailable");
+      const results: unknown = await response.json();
 
       if (!Array.isArray(results) || results.length === 0) {
         setSearchError("No matching South African location found.");
         return;
       }
 
+      if (!isRecord(results[0])) {
+        setSearchError("No matching South African location found.");
+        return;
+      }
       const place = results[0];
       const latitude = Number(place.lat);
       const longitude = Number(place.lon);
-
-      setCurrentLocation({ latitude, longitude });
-
-      if (onSelectLocation) {
-        onSelectLocation({
-          latitude,
-          longitude,
-          city: place.display_name || "South Africa",
-          municipality: "South Africa",
-          address: place.display_name || "Searched location",
-        });
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude) ||
+          latitude < southAfricaServiceBounds.minLatitude ||
+          latitude > southAfricaServiceBounds.maxLatitude ||
+          longitude < southAfricaServiceBounds.minLongitude ||
+          longitude > southAfricaServiceBounds.maxLongitude) {
+        setSearchError("No matching South African location found.");
+        return;
       }
+
+      selectLocation({ latitude, longitude }, true);
     } catch {
       setSearchError("Search failed. Please try again.");
+    } finally {
+      setIsSearching(false);
     }
   };
 
   const handleUseMyLocation = () => {
+    if (isLocating) return;
     if (!navigator.geolocation) {
       setSearchError("Geolocation is not supported in this browser.");
       return;
     }
 
+    setSearchError("");
+    setIsLocating(true);
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const nextLocation = {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
+          latitude: Number(position.coords.latitude.toFixed(6)),
+          longitude: Number(position.coords.longitude.toFixed(6)),
         };
 
-        setCurrentLocation(nextLocation);
-        if (onSelectLocation) {
-          onSelectLocation({
-            ...nextLocation,
-            city: "My Location",
-            municipality: "My Location",
-            address: "Current device location",
-          });
+        setIsLocating(false);
+        if (nextLocation.latitude < southAfricaServiceBounds.minLatitude ||
+            nextLocation.latitude > southAfricaServiceBounds.maxLatitude ||
+            nextLocation.longitude < southAfricaServiceBounds.minLongitude ||
+            nextLocation.longitude > southAfricaServiceBounds.maxLongitude) {
+          setSearchError("Your current location is outside the supported South African service area.");
+          return;
         }
+        selectLocation(nextLocation, true);
         setSearchError("");
       },
-      () => {
-        setSearchError("Unable to access your current location. Please try again.");
+      (error) => {
+        setIsLocating(false);
+        if (error.code === error.PERMISSION_DENIED) {
+          setSearchError("Location permission was denied. Allow location access in your browser settings or select a point on the map.");
+        } else if (error.code === error.TIMEOUT) {
+          setSearchError("Your current location could not be found in time. Please try again.");
+        } else {
+          setSearchError("Your current location is unavailable. Please try again or select a point on the map.");
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 10000,
       },
     );
   };
@@ -656,7 +694,7 @@ export function MapView({
           />
 
           <MapZoomTracker onZoomChange={onZoomChange} />
-          <MapClickHandler onSelectLocation={onSelectLocation} />
+          <MapClickHandler onSelectLocation={selectLocation} />
           <MapCenterController target={currentLocation ?? selectedLocation ?? null} />
           <ReportMapViewport
             issues={validIssues}
@@ -742,27 +780,30 @@ export function MapView({
             type="text"
             value={searchText}
             onChange={(event) => setSearchText(event.target.value)}
+            aria-label="Search for a place in South Africa"
             placeholder="Search for a place in South Africa"
             className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
           />
           <button
             type="button"
             onClick={handleSearch}
+            disabled={isSearching}
             className="rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
           >
-            Search
+            {isSearching ? "Searching..." : "Search"}
           </button>
           <button
             type="button"
             onClick={handleUseMyLocation}
+            disabled={isLocating}
             className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-emerald-200 hover:text-emerald-700"
           >
-            Use My Location
+            {isLocating ? "Finding location..." : "Use My Location"}
           </button>
         </div>
 
         {searchError && (
-          <p className="text-sm font-medium text-rose-600">{searchError}</p>
+          <p role="alert" aria-live="polite" className="text-sm font-medium text-rose-600">{searchError}</p>
         )}
 
       </div>

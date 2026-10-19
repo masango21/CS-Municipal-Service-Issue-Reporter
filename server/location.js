@@ -125,14 +125,15 @@ async function waitForReverseGeocoderSlot(minIntervalMs) {
 
 async function reverseGeocode(latitude, longitude, options = {}) {
   if (!validateCoordinates(latitude, longitude)) return null;
-  const cacheKey = `${latitude.toFixed(5)},${longitude.toFixed(5)}`;
+  const endpoint = options.endpoint || process.env.REVERSE_GEOCODER_URL || DEFAULT_REVERSE_GEOCODER_URL;
+  const endpointUrl = new URL(endpoint);
+  const cacheKey = `${endpointUrl.origin}${endpointUrl.pathname}${endpointUrl.search}|${latitude.toFixed(5)},${longitude.toFixed(5)}`;
   if (reverseCache.has(cacheKey)) return reverseCache.get(cacheKey);
 
-  const endpoint = options.endpoint || process.env.REVERSE_GEOCODER_URL || DEFAULT_REVERSE_GEOCODER_URL;
   const fetchImpl = options.fetchImpl || fetch;
   const minIntervalMs = options.minIntervalMs ?? 1000;
   if (minIntervalMs > 0) await waitForReverseGeocoderSlot(minIntervalMs);
-  const url = new URL(endpoint);
+  const url = endpointUrl;
   url.searchParams.set('format', 'jsonv2');
   url.searchParams.set('lat', String(latitude));
   url.searchParams.set('lon', String(longitude));

@@ -32,6 +32,15 @@ This repository contains deployment scaffolding, but no service is deployed or v
 - `CLIENT_ORIGIN`: exact HTTPS frontend origin.
 - `DATABASE_SSL=true`; use `SESSION_COOKIE_SAME_SITE=none` for cross-site Vercel/Render hostnames or `lax` for HTTPS on same-site custom domains.
 
+The Blueprint allowlist includes the current preview origin
+`https://cs-municipal-service-issue-rep-kduvpdqcv.vercel.app` in addition to the two
+existing Vercel origins. The API checks the browser's exact `Origin` on cookie-authenticated
+writes across reports, maps, and assistant routes. A new ephemeral Vercel preview hostname
+must be added as an exact origin to the Render API's `CLIENT_ORIGIN` and allowed by its CORS
+configuration. Updating `render.yaml` does not change an existing Render service until its
+Blueprint is synchronized and the service is restarted/redeployed. Prefer a stable approved
+frontend domain for ongoing use; do not allow arbitrary Vercel subdomains.
+
 Production startup refuses to use JSON file storage. The API applies versioned SQL files under `server/sql/migrations/` at startup. A pending migration 002 still blocks startup unless its separately verified gate is enabled. A pending migration 004 alone is deferred, with AI conversation routes unavailable (HTTP 503); it is never applied unless its dedicated flag is explicitly enabled after disposable-database validation and separate production approval. The API does not seed reports, residents, or staff accounts.
 
 The existing Render Blueprint runs only the Node API; it does not install Ollama, host model weights, or provision inference capacity. A locally hosted Ollama instance is not reachable by the separately hosted Render API. Before production use, provision an always-available Ollama-compatible service with enough memory and compute for `llama3.2:3b`, install and verify the model there, restrict TLS-protected network access to the API or use provider authentication, and configure the server-only settings above. The API rejects missing, non-HTTPS, and loopback Ollama URLs in production and returns a safe error if the configured service or model is unavailable. Do not expose Ollama's port publicly or point production at a developer workstation.
@@ -42,9 +51,11 @@ Assistant routes are part of the existing main API; the client proxies `/api/ass
 
 ## Vercel Client
 
-Import the repository into Vercel and set the project root directory to `client`. Add this server-side environment variable for each deployment environment; it is required for production builds and used by Next.js rewrites without exposing the API origin in browser bundles:
+Import the repository into Vercel and set the project Root Directory to `client`. Add this server-side environment variable under **Project Settings → Environment Variables** for every environment that you deploy (Production, Preview, and Development as applicable). It is required during the production build and used by Next.js rewrites without exposing the API origin in browser bundles:
 
-- `API_BASE_URL`: the HTTPS API origin, for example `https://api.example.gov.za`.
+- `API_BASE_URL`: the actual HTTPS origin of the deployed Express API. Enter only the origin (scheme and hostname, with an optional port); do not append `/api` or another path, and do not include credentials. For example, use the placeholder form `https://<your-api-host>` and replace it with the API host assigned to your service.
+
+After saving the variable, trigger a new deployment so the build receives it. If Vercel reports `API_BASE_URL must be configured for production builds`, this variable is missing from the environment used by that deployment. Do not remove the production check or set this variable to `localhost`; a successful build needs the real HTTPS API origin. The repository does not determine or configure that production host automatically.
 
 Assign the frontend custom domain under the same parent domain as the API. Do not use a wildcard CORS origin.
 

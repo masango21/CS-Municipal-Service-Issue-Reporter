@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { issueCategories } from "@/data/issueCategories";
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
@@ -16,6 +16,14 @@ const LocationPicker = dynamic(
 );
 
 const priorities: IssuePriority[] = ["Low", "Medium", "High", "Critical"];
+type ReportValidationErrors = {
+  title?: string;
+  description?: string;
+  category?: string;
+  location?: string;
+  priority?: string;
+};
+
 export default function ReportIssuePage() {
   const router = useRouter();
   const { residentUser, adminUser, isAuthReady } = useAuth();
@@ -28,16 +36,25 @@ export default function ReportIssuePage() {
   const [priority, setPriority] = useState<IssuePriority>("High");
   const [image, setImage] = useState("");
   const [imageName, setImageName] = useState("");
+  const [fileError, setFileError] = useState("");
   const [selectedLocation, setSelectedLocation] = useState<IssueLocation | null>(null);
+  const [locationLookupVersion, setLocationLookupVersion] = useState(0);
   const [locationStatus, setLocationStatus] = useState<"idle" | "loading" | "resolved" | "error">("idle");
   const [locationError, setLocationError] = useState("");
+  const [validationErrors, setValidationErrors] = useState<ReportValidationErrors>({});
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const fileReaderRef = useRef<FileReader | null>(null);
 
   useEffect(() => {
     if (!isAuthReady || residentUser) return;
     router.replace(adminUser ? "/admin/dashboard" : "/login?next=/report");
   }, [adminUser, isAuthReady, residentUser, router]);
+
+  useEffect(() => () => {
+    fileReaderRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     const latitude = selectedLocation?.latitude;
@@ -73,41 +90,73 @@ export default function ReportIssuePage() {
       active = false;
       controller.abort();
     };
-  }, [selectedLocation?.latitude, selectedLocation?.longitude]);
+  }, [locationLookupVersion, selectedLocation?.latitude, selectedLocation?.longitude]);
 
   const handleLocationChange = (location: IssueLocation) => {
     setLocationStatus("loading");
     setLocationError("");
+    setError("");
     setSelectedLocation({ latitude: location.latitude, longitude: location.longitude });
+    setLocationLookupVersion((version) => version + 1);
+    setValidationErrors((current) => ({ ...current, location: undefined }));
   };
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    setError("");
 
     if (!file) {
+      fileReaderRef.current?.abort();
+      fileReaderRef.current = null;
       setImage("");
       setImageName("");
+      setFileError("");
       return;
     }
 
     const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
     if (!allowedTypes.includes(file.type) || file.size > 3 * 1024 * 1024) {
-      setImage("");
-      setImageName("");
+      fileReaderRef.current?.abort();
+      fileReaderRef.current = null;
       event.target.value = "";
-      setError("Choose a JPEG, PNG, or WebP image no larger than 3 MB.");
+      setFileError("Choose a JPEG, PNG, or WebP image no larger than 3 MB.");
       return;
     }
 
+    fileReaderRef.current?.abort();
     const reader = new FileReader();
+    fileReaderRef.current = reader;
 
     reader.onload = () => {
-      setImage(typeof reader.result === "string" ? reader.result : "");
-      setImageName(file.name);
+      if (fileReaderRef.current !== reader) return;
+      if (typeof reader.result !== "string") {
+        setFileError("The selected image could not be read. Choose another file.");
+      } else {
+        setImage(reader.result);
+        setImageName(file.name);
+        setFileError("");
+      }
+      fileReaderRef.current = null;
     };
 
-    reader.readAsDataURL(file);
+    reader.onerror = () => {
+      if (fileReaderRef.current !== reader) return;
+      fileReaderRef.current = null;
+      setFileError("The selected image could not be read. Choose another file.");
+    };
+
+    reader.onabort = () => {
+      if (fileReaderRef.current !== reader) return;
+      fileReaderRef.current = null;
+      setFileError("The selected image could not be read. Choose another file.");
+    };
+
+    setFileError("");
+    try {
+      reader.readAsDataURL(file);
+    } catch {
+      fileReaderRef.current = null;
+      setFileError("The selected image could not be read. Choose another file.");
+    }
   };
 
   const handleResetSelection = () => {
@@ -116,25 +165,64 @@ export default function ReportIssuePage() {
     setLocationError("");
     setCategory("");
     setError("");
+    setValidationErrors((current) => ({ ...current, category: undefined, location: undefined }));
   };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (submittingRef.current) return;
 
     if (!isAuthReady || !residentUser) {
       router.replace(adminUser ? "/admin/dashboard" : "/login?next=/report");
       return;
     }
 
-    if (!category || !title.trim() || !description.trim() || !selectedLocation?.municipalityId || locationStatus !== "resolved") {
-      setError(t("reportValidationError"));
+    const nextValidationErrors: ReportValidationErrors = {};
+    const normalizedTitle = title.trim();
+    const normalizedDescription = description.trim();
+    if (!normalizedTitle) {
+      nextValidationErrors.title = "Enter a title for the issue.";
+    } else if (normalizedTitle.length > 160) {
+      nextValidationErrors.title = "The title must be 160 characters or fewer.";
+    }
+    if (!normalizedDescription) {
+      nextValidationErrors.description = "Enter a description of the issue.";
+    } else if (normalizedDescription.length > 5000) {
+      nextValidationErrors.description = "The description must be 5000 characters or fewer.";
+    }
+    if (!issueCategories.some((item) => item === category)) {
+      nextValidationErrors.category = "Choose an issue category.";
+    }
+    if (!selectedLocation) {
+      nextValidationErrors.location = "Select the exact issue location on the map.";
+    } else if (locationStatus === "loading") {
+      nextValidationErrors.location = "Wait for the selected location to finish resolving.";
+    } else if (locationStatus !== "resolved" || !selectedLocation.municipalityId) {
+      nextValidationErrors.location = locationError || "Choose a location within a supported municipality.";
+    } else if (
+      selectedLocation.latitude < -35.5 || selectedLocation.latitude > -22 ||
+      selectedLocation.longitude < 16 || selectedLocation.longitude > 33
+    ) {
+      nextValidationErrors.location = "Select a location within South Africa.";
+    }
+    if (!priorities.includes(priority)) {
+      nextValidationErrors.priority = "Choose a valid priority.";
+    }
+
+    setValidationErrors(nextValidationErrors);
+    if (Object.keys(nextValidationErrors).length > 0) {
+      setError("Review the highlighted fields before submitting.");
+      return;
+    }
+    if (!selectedLocation) {
+      setError("Select the exact issue location on the map.");
       return;
     }
 
     const draft: IssueDraft = {
-      title: title.trim(),
+      title: normalizedTitle,
       category,
-      description: description.trim(),
+      description: normalizedDescription,
       location: selectedLocation,
       priority,
       reportedBy: residentUser.name,
@@ -142,12 +230,17 @@ export default function ReportIssuePage() {
     };
 
     setError("");
+    submittingRef.current = true;
     setIsSubmitting(true);
     try {
       const newReport = await addReport(draft);
       router.push(`/issues/${newReport.id}`);
-    } catch {
-      setError("Your report could not be saved. Check your connection and try again.");
+    } catch (submitError) {
+      setError(submitError instanceof Error
+        ? submitError.message
+        : "Your report could not be saved. Check your connection and try again.");
+    } finally {
+      submittingRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -177,10 +270,19 @@ export default function ReportIssuePage() {
               <input
                 id="title"
                 value={title}
-                onChange={(event) => setTitle(event.target.value)}
+                onChange={(event) => {
+                  setTitle(event.target.value);
+                  setError("");
+                  setValidationErrors((current) => ({ ...current, title: undefined }));
+                }}
+                required
+                maxLength={160}
+                aria-invalid={Boolean(validationErrors.title)}
+                aria-describedby={validationErrors.title ? "title-error" : undefined}
                 placeholder={t("issueTitlePlaceholder")}
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
               />
+              {validationErrors.title && <p id="title-error" className="mt-2 text-sm text-rose-700">{validationErrors.title}</p>}
             </div>
 
             <div>
@@ -190,11 +292,20 @@ export default function ReportIssuePage() {
               <textarea
                 id="description"
                 value={description}
-                onChange={(event) => setDescription(event.target.value)}
+                onChange={(event) => {
+                  setDescription(event.target.value);
+                  setError("");
+                  setValidationErrors((current) => ({ ...current, description: undefined }));
+                }}
                 rows={5}
+                required
+                maxLength={5000}
+                aria-invalid={Boolean(validationErrors.description)}
+                aria-describedby={validationErrors.description ? "description-error" : undefined}
                 placeholder={t("descriptionPlaceholder")}
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
               />
+              {validationErrors.description && <p id="description-error" className="mt-2 text-sm text-rose-700">{validationErrors.description}</p>}
             </div>
 
             <section aria-label="Detected location" className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -211,6 +322,7 @@ export default function ReportIssuePage() {
                 </p>
               </div>
               {locationStatus === "error" && <p role="alert" className="text-sm text-rose-700">{locationError}</p>}
+              {validationErrors.location && <p id="location-error" role="alert" className="text-sm text-rose-700">{validationErrors.location}</p>}
               {locationStatus === "resolved" && !selectedLocation?.address && (
                 <p role="status" className="text-sm text-amber-800">Address could not be detected. The selected coordinates and municipality are confirmed.</p>
               )}
@@ -226,7 +338,13 @@ export default function ReportIssuePage() {
               <select
                 id="priority"
                 value={priority}
-                onChange={(event) => setPriority(event.target.value as IssuePriority)}
+                onChange={(event) => {
+                  setPriority(event.target.value as IssuePriority);
+                  setError("");
+                  setValidationErrors((current) => ({ ...current, priority: undefined }));
+                }}
+                aria-invalid={Boolean(validationErrors.priority)}
+                aria-describedby={validationErrors.priority ? "priority-error" : undefined}
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
               >
                 {priorities.map((item) => (
@@ -235,6 +353,7 @@ export default function ReportIssuePage() {
                   </option>
                 ))}
               </select>
+              {validationErrors.priority && <p id="priority-error" className="mt-2 text-sm text-rose-700">{validationErrors.priority}</p>}
             </div>
 
             <div>
@@ -247,11 +366,13 @@ export default function ReportIssuePage() {
                   type="file"
                   accept="image/jpeg,image/png,image/webp"
                   onChange={handleFileUpload}
+                  aria-describedby="photo-help photo-error"
                   className="block w-full text-sm text-slate-600 file:mr-4 file:rounded-full file:border-0 file:bg-emerald-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-emerald-700"
                 />
-                <p className="mt-3 text-xs text-slate-500">
+                <p id="photo-help" className="mt-3 text-xs text-slate-500">
                   {t("evidencePhotoHelp")}
                 </p>
+                {fileError && <p id="photo-error" role="alert" className="mt-2 text-sm text-rose-700">{fileError}</p>}
                 {imageName && (
                   <p className="mt-3 text-sm font-medium text-emerald-700">{t("selectedFile")} {imageName}</p>
                 )}
@@ -263,14 +384,16 @@ export default function ReportIssuePage() {
               </div>
             </div>
 
+            {validationErrors.category && <p id="category-error" role="alert" className="text-sm text-rose-700">{validationErrors.category}</p>}
             {error && (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+              <div role="alert" aria-live="polite" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
                 {error}
               </div>
             )}
 
             <button
-              disabled={isSubmitting || locationStatus !== "resolved" || !selectedLocation?.municipalityId}
+              disabled={isSubmitting || locationStatus === "loading"}
+              aria-busy={isSubmitting}
               type="submit"
               className="w-full rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-60"
             >
@@ -313,8 +436,13 @@ export default function ReportIssuePage() {
                         <button
                           key={item}
                           type="button"
-                          onClick={() => setCategory(item)}
+                          onClick={() => {
+                            setCategory(item);
+                            setError("");
+                            setValidationErrors((current) => ({ ...current, category: undefined }));
+                          }}
                           aria-pressed={isSelected}
+                          aria-describedby={validationErrors.category ? "category-error" : undefined}
                           className={[
                             "rounded-xl border px-3 py-2.5 text-left text-sm font-medium transition",
                             isSelected
