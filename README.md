@@ -13,7 +13,7 @@ Authenticated residents can use the floating AI Assistant for application guidan
 - Next.js, React, TypeScript, Tailwind CSS
 - Express API with PostgreSQL/Neon in production
 - HttpOnly cookie sessions and server-side password hashing
-- Server-side local Ollama integration and owner-scoped AI conversation history
+- Server-side Ollama integration and owner-scoped AI conversation history
 - JSON file store only for local development and isolated tests
 - Leaflet/OpenStreetMap for South Africa-focused report maps
 
@@ -34,8 +34,7 @@ For isolated local development, set `USE_FILE_STORE=true` in ignored `server/.en
 node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 ```
 
-Then run `npm start` from `server/`.
-The assistant uses local Ollama; it does not require an OpenAI API key. Install Ollama, pull the configured `OLLAMA_MODEL`, and set `OLLAMA_BASE_URL` and `OLLAMA_MODEL` in the server environment. See [server/README.md](server/README.md#local-ai-assistant-windows) for isolated port-4001 startup and verification steps. If Ollama or the model is unavailable, the API reports a safe error instead of returning canned responses.
+Then run `npm start` from `server/`. The assistant uses local Ollama; it does not require an OpenAI API key. Install Ollama and pull `llama3.2:3b` (or the configured model). The assistant routes use this same API service; a separate port-4001 assistant server is not needed. See [server/README.md](server/README.md#local-ai-assistant-windows) for setup and isolated verification. If Ollama or the model is unavailable, the API reports a safe error instead of returning canned responses.
 
 2. In `client/`:
 
@@ -45,7 +44,7 @@ Copy-Item .env.example .env.local
 npm run dev
 ```
 
-The client runs at `http://localhost:3000`; the API runs at `http://localhost:4000`.
+Set `API_BASE_URL=http://localhost:4000` in `client/.env.local` if needed. The client runs at `http://localhost:3000`; the API and assistant routes run together at `http://localhost:4000`.
 
 ## Checks
 
@@ -53,4 +52,4 @@ Run `npm test` in `server/` and `npm run build` in `client/`. API tests create a
 
 ## Production Boundary
 
-Production refuses to start without PostgreSQL. Test migrations against a disposable Neon branch before applying them to any real database. Rotate all credentials previously shared in chat; never commit `.env` files. The frontend and API need HTTPS custom domains under the same registrable domain for the configured Lax session cookie to work reliably.
+Production refuses to start without PostgreSQL. A pending AI-only migration 004 no longer blocks the rest of the API; assistant persistence remains unavailable until the migration is verified on a disposable Neon branch and separately approved. Other gated migrations can still prevent startup. Never enable migration 004 just to make the API start. Rotate all credentials previously shared in chat; never commit `.env` files. The frontend and API need HTTPS custom domains under the same registrable domain for the configured Lax session cookie to work reliably.

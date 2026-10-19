@@ -1,31 +1,32 @@
 import type { NextConfig } from "next";
 
-const MAIN_API_ORIGIN = "http://localhost:4000";
-const ASSISTANT_API_ORIGIN = "http://localhost:4001";
-const configuredMainApiOrigin = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").trim();
-const configuredAssistantApiOrigin = (process.env.NEXT_PUBLIC_ASSISTANT_API_BASE_URL ?? "").trim();
+const DEFAULT_DEV_API_ORIGIN = "http://localhost:4000";
+const configuredApiOrigin = (process.env.API_BASE_URL ?? "").trim();
+const isProduction = process.env.NODE_ENV === "production";
 const isLocalDevOrigin = (candidate: string) => /^(https?:\/\/)(localhost|127\.0\.0\.1)(?::\d+)?$/i.test(candidate);
-const resolvedMainApiOrigin = process.env.NODE_ENV === "production"
-  ? (configuredMainApiOrigin || MAIN_API_ORIGIN)
-  : (isLocalDevOrigin(configuredMainApiOrigin) ? configuredMainApiOrigin : MAIN_API_ORIGIN);
-const resolvedAssistantApiOrigin = process.env.NODE_ENV === "production"
-  ? (configuredAssistantApiOrigin || ASSISTANT_API_ORIGIN)
-  : (isLocalDevOrigin(configuredAssistantApiOrigin) ? configuredAssistantApiOrigin : ASSISTANT_API_ORIGIN);
-const API_ORIGIN = resolvedMainApiOrigin.replace(/\/+$/, "");
-const ASSISTANT_ORIGIN = resolvedAssistantApiOrigin.replace(/\/+$/, "");
-const PUBLIC_API_ORIGIN = new URL(API_ORIGIN).origin;
-const PUBLIC_ASSISTANT_ORIGIN = new URL(ASSISTANT_ORIGIN).origin;
+if (isProduction && !configuredApiOrigin) {
+  throw new Error("API_BASE_URL must be configured for production builds.");
+}
+
+const resolvedApiOrigin = isProduction
+  ? configuredApiOrigin
+  : (isLocalDevOrigin(configuredApiOrigin) ? configuredApiOrigin : DEFAULT_DEV_API_ORIGIN);
+const parsedApiUrl = new URL(resolvedApiOrigin);
+if (!["http:", "https:"].includes(parsedApiUrl.protocol) || parsedApiUrl.username || parsedApiUrl.password) {
+  throw new Error("API_BASE_URL must be a valid HTTP(S) origin without embedded credentials.");
+}
+if (isProduction && (parsedApiUrl.protocol !== "https:" ||
+    /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$|\.localhost$/i.test(parsedApiUrl.hostname))) {
+  throw new Error("API_BASE_URL must use a public HTTPS origin in production.");
+}
+const API_ORIGIN = parsedApiUrl.origin;
 
 const nextConfig: NextConfig = {
-  env: {
-    NEXT_PUBLIC_API_BASE_URL: PUBLIC_API_ORIGIN,
-    NEXT_PUBLIC_ASSISTANT_API_BASE_URL: PUBLIC_ASSISTANT_ORIGIN,
-  },
   async rewrites() {
     return [
       {
         source: "/api/assistant/:path*",
-        destination: `${ASSISTANT_ORIGIN}/api/assistant/:path*`,
+        destination: `${API_ORIGIN}/api/assistant/:path*`,
       },
       {
         source: "/api/:path*",

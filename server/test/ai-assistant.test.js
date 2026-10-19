@@ -44,6 +44,8 @@ test('Ollama sends bounded history and verified municipal context to the local c
   assert.match(captured.body.messages[0].content, /Broken Streetlight/);
   assert.match(captured.body.messages[0].content, /Under Review/);
   assert.match(captured.body.messages[0].content, /Do not ask residents for their name/);
+  assert.match(captured.body.messages[0].content, /After describing how to submit, stop/);
+  assert.match(captured.body.messages[0].content, /do not say or imply that the system, staff, or municipality will handle the report/);
   assert.match(captured.body.messages[0].content, /Never claim that a report is forwarded, assigned, reviewed, or acted on/);
   assert.match(captured.body.messages[0].content, /Do not invent or assign a reference number or status/);
   assert.deepEqual(captured.body.messages.slice(1, 3), [
@@ -53,18 +55,71 @@ test('Ollama sends bounded history and verified municipal context to the local c
   assert.match(captured.body.messages[3].content, /Verified report data/);
 });
 
-test('Ollama provider fails clearly when no model is configured', async () => {
+test('Ollama provider uses the project model when configuration is unset or blank', async () => {
+  let captured;
+  const reply = await getAssistantReply({
+    ...knowledge,
+    baseUrl: 'http://127.0.0.1:11434',
+    model: '',
+    messages: [{ role: 'user', content: 'Hello' }],
+    fetchImpl: async (_url, options) => {
+      captured = JSON.parse(options.body);
+      return createResponse(200, { message: { content: 'Hello.' } });
+    },
+  });
+
+  assert.equal(reply, 'Hello.');
+  assert.equal(captured.model, 'llama3.2:3b');
+});
+
+test('production Ollama configuration requires an explicit HTTPS service and keeps credentials server-side', async () => {
+  const base = {
+    ...knowledge,
+    model: 'llama3.2:3b',
+    messages: [{ role: 'user', content: 'Hello' }],
+    production: true,
+  };
+  let requestCount = 0;
+  const fetchImpl = async (_url, options) => {
+    requestCount += 1;
+    assert.equal(options.headers.Authorization, 'Bearer test-provider-key');
+    assert.equal(options.body.includes('test-provider-key'), false);
+    return createResponse(200, { message: { content: 'Hello.' } });
+  };
+
   await assert.rejects(
     getAssistantReply({
-      ...knowledge,
-      model: '',
-      messages: [{ role: 'user', content: 'Hello' }],
-      fetchImpl: async () => { throw new Error('must not call'); },
+      ...base,
+      baseUrl: '',
+      fetchImpl,
     }),
-    (error) => error instanceof AssistantProviderError &&
-      error.code === 'not_configured' &&
-      error.message === 'The AI assistant model is not configured yet.',
+    (error) => error instanceof AssistantProviderError && error.code === 'not_configured',
   );
+  await assert.rejects(
+    getAssistantReply({
+      ...base,
+      baseUrl: 'http://ollama.example.test',
+      fetchImpl,
+    }),
+    (error) => error instanceof AssistantProviderError && error.code === 'invalid_configuration',
+  );
+  await assert.rejects(
+    getAssistantReply({
+      ...base,
+      baseUrl: 'https://127.0.0.1:11434',
+      fetchImpl,
+    }),
+    (error) => error instanceof AssistantProviderError && error.code === 'invalid_configuration',
+  );
+
+  const reply = await getAssistantReply({
+    ...base,
+    baseUrl: 'https://ollama.example.test',
+    apiKey: 'test-provider-key',
+    fetchImpl,
+  });
+  assert.equal(reply, 'Hello.');
+  assert.equal(requestCount, 1);
 });
 
 test('Ollama provider reports a missing local model without exposing provider details', async () => {

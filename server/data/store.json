@@ -3301,5 +3301,29 @@
       "action": "municipality_access_verified",
       "createdAt": "2026-10-01T12:27:08.043Z"
     }
+  ],
+  "chatConversations": [],
+  "aiAssistantConversations": [
+    {
+      "id": "074c7559-c4ec-4412-9c0c-e940561d7928",
+      "residentId": "USR-1790753528499-f27c54",
+      "createdAt": "2026-10-19T08:22:33.534Z",
+      "updatedAt": "2026-10-19T08:22:33.534Z",
+      "messages": []
+    },
+    {
+      "id": "d9aa9156-8fd5-4705-85f0-3723f8ea8d8d",
+      "residentId": "USR-1790753528499-f27c54",
+      "createdAt": "2026-10-19T07:58:22.987Z",
+      "updatedAt": "2026-10-19T07:58:22.987Z",
+      "messages": []
+    },
+    {
+      "id": "1c05baba-3522-4b95-bc9c-83892868fc25",
+      "residentId": "USR-1790753528499-f27c54",
+      "createdAt": "2026-10-19T07:42:09.150Z",
+      "updatedAt": "2026-10-19T07:42:09.150Z",
+      "messages": []
+    }
   ]
 }

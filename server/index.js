@@ -25,6 +25,7 @@ const {
   createAiAssistantConversation,
   getAiAssistantMessages,
   appendAiAssistantTurn,
+  isAiAssistantSchemaReady,
   getResidentByEmail,
   createResidentInDb,
   getStaffByEmail,
@@ -245,11 +246,18 @@ function mainApiRequestHeaders(req) {
 }
 
 async function requestMainApiJson(req, route) {
-  const baseUrl = req.app.locals.mainApiBaseUrl || process.env.MAIN_API_BASE_URL || DEFAULT_MAIN_API_BASE_URL;
+  const baseUrl = req.app.locals.mainApiBaseUrl || process.env.MAIN_API_BASE_URL ||
+    (process.env.NODE_ENV === 'production' ? '' : DEFAULT_MAIN_API_BASE_URL);
   let url;
   try {
     const configuredUrl = new URL(baseUrl);
-    if (!['http:', 'https:'].includes(configuredUrl.protocol)) throw new Error('Unsupported protocol');
+    if (!['http:', 'https:'].includes(configuredUrl.protocol) ||
+        configuredUrl.username || configuredUrl.password ||
+        (process.env.NODE_ENV === 'production' &&
+          (configuredUrl.protocol !== 'https:' ||
+            /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$|\.localhost$/i.test(configuredUrl.hostname)))) {
+      throw new Error('Unsupported API URL');
+    }
     url = new URL(route, configuredUrl);
   } catch {
     throw new MainApiUnavailableError();
@@ -330,6 +338,14 @@ async function requireMainApiResident(req, res, next) {
 const validateAssistantConversationId = (req, res, next) => {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(req.params.id)) {
     return res.status(404).json({ message: 'Assistant conversation not found.' });
+  }
+  return next();
+};
+const requireAssistantStorage = (req, res, next) => {
+  if (req.app.locals.aiAssistantSchemaReady === false || !isAiAssistantSchemaReady()) {
+    return res.status(503).json({
+      message: 'AI assistant chat is unavailable until its database migration is approved and applied.',
+    });
   }
   return next();
 };
@@ -1249,7 +1265,7 @@ app.get('/api/admin/reports', requireAdmin, async (req, res) => {
   }
 });
 
-app.get('/api/assistant/conversations', requireMainApiResident, async (req, res) => {
+app.get('/api/assistant/conversations', requireMainApiResident, requireAssistantStorage, async (req, res) => {
   try {
     const conversations = await listAssistantConversationRecords(req.auth.id);
     return res.status(200).json({ conversations });
@@ -1259,7 +1275,7 @@ app.get('/api/assistant/conversations', requireMainApiResident, async (req, res)
   }
 });
 
-app.post('/api/assistant/conversations', requireMainApiResident, async (req, res) => {
+app.post('/api/assistant/conversations', requireMainApiResident, requireAssistantStorage, async (req, res) => {
   try {
     const conversation = await createAssistantConversation(req.auth.id);
     if (!conversation) throw new Error('Assistant conversation was not created.');
@@ -1270,7 +1286,7 @@ app.post('/api/assistant/conversations', requireMainApiResident, async (req, res
   }
 });
 
-app.get('/api/assistant/conversations/:id/messages', requireMainApiResident, validateAssistantConversationId, async (req, res) => {
+app.get('/api/assistant/conversations/:id/messages', requireMainApiResident, requireAssistantStorage, validateAssistantConversationId, async (req, res) => {
   try {
     const conversation = await getAssistantConversationRecord(req.params.id, req.auth.id);
     if (!conversation) return res.status(404).json({ message: 'Assistant conversation not found.' });
@@ -1282,7 +1298,7 @@ app.get('/api/assistant/conversations/:id/messages', requireMainApiResident, val
   }
 });
 
-app.post('/api/assistant/conversations/:id/messages', requireMainApiResident, validateAssistantConversationId, assistantMessageRateLimiter, async (req, res) => {
+app.post('/api/assistant/conversations/:id/messages', requireMainApiResident, requireAssistantStorage, validateAssistantConversationId, assistantMessageRateLimiter, async (req, res) => {
   const content = typeof req.body?.content === 'string' ? req.body.content.trim() : '';
   const reportReference = req.body?.reportReference;
   if (!content || content.length > 2000) {
@@ -1293,12 +1309,14 @@ app.post('/api/assistant/conversations/:id/messages', requireMainApiResident, va
     return res.status(400).json({ message: 'The report reference is invalid.' });
   }
 
+  let failureStage = 'conversation_lookup';
   try {
     const conversation = await getAssistantConversationRecord(req.params.id, req.auth.id);
     if (!conversation) return res.status(404).json({ message: 'Assistant conversation not found.' });
 
     let report = null;
     if (reportReference) {
+      failureStage = 'report_context_lookup';
       const residentReports = await listMainApiResidentReports(req);
       report = residentReports.find((candidate) => candidate.id === reportReference.trim()) || null;
       if (!report) {
@@ -1306,7 +1324,9 @@ app.post('/api/assistant/conversations/:id/messages', requireMainApiResident, va
       }
     }
 
+    failureStage = 'history_lookup';
     const previousMessages = await getAssistantMessages(conversation.id);
+    failureStage = 'provider';
     const provider = req.app.locals.assistantProvider || getAssistantReply;
     const assistantContent = await provider({
       messages: [
@@ -1321,11 +1341,14 @@ app.post('/api/assistant/conversations/:id/messages', requireMainApiResident, va
       statuses: VALID_STATUSES,
       priorities: VALID_PRIORITIES,
     });
+    failureStage = 'response_validation';
     if (typeof assistantContent !== 'string' || !assistantContent.trim() || assistantContent.trim().length > 4000) {
       throw new AssistantProviderError('The AI assistant returned an invalid response.', 'invalid_response');
     }
 
-    const messages = await appendAssistantTurn({
+    failureStage = 'turn_persistence';
+    const appendTurn = req.app.locals.assistantTurnAppender || appendAssistantTurn;
+    const messages = await appendTurn({
       conversationId: conversation.id,
       residentId: req.auth.id,
       userContent: content,
@@ -1337,7 +1360,18 @@ app.post('/api/assistant/conversations/:id/messages', requireMainApiResident, va
     const message = error instanceof AssistantProviderError
       ? error.message
       : 'The AI assistant is temporarily unavailable. Please try again.';
-    console.error('AI assistant request failed:', error instanceof AssistantProviderError ? error.code : 'internal_error');
+    const knownNetworkErrorCodes = ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENOTFOUND'];
+    const errorCode = error instanceof AssistantProviderError
+      ? error.code
+      : typeof error?.code === 'string' &&
+        (/^[0-9A-Z]{5}$/.test(error.code) || knownNetworkErrorCodes.includes(error.code))
+        ? error.code
+        : 'unknown';
+    console.error('AI assistant request failed:', {
+      stage: failureStage,
+      errorClass: error instanceof AssistantProviderError ? 'AssistantProviderError' : error instanceof Error ? 'Error' : 'UnknownError',
+      errorCode,
+    });
     return res.status(503).json({ message });
   }
 });

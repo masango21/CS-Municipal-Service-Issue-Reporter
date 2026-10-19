@@ -1,6 +1,9 @@
 const ASSISTANT_TIMEOUT_MS = 90_000;
 const MAX_HISTORY_MESSAGES = 20;
 const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
+const DEFAULT_OLLAMA_MODEL = 'llama3.2:3b';
+const isLoopbackHostname = (hostname) =>
+  /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$|\.localhost$/i.test(hostname);
 
 class AssistantProviderError extends Error {
   constructor(message, code = 'unavailable') {
@@ -16,6 +19,7 @@ function createSystemPrompt({ categories, statuses, priorities }) {
     'Clearly identify yourself as AI when relevant. Never imply you are a municipal employee or that a human has replied.',
     'Use only the application facts below. If a fact or policy is not listed, say you do not know rather than inventing municipal rules, contacts, deadlines, or service guarantees.',
     'When explaining a new report, say only that a resident signs in or registers, opens /report, enters a title and description, selects a listed category, places the map pin, and may attach an optional supported image. Do not invent button labels or add other required fields.',
+    'After describing how to submit, stop. The application documents no workflow after submission: do not say or imply that the system, staff, or municipality will handle the report, take next steps, review it, or contact the resident. If asked what happens next, explicitly say the application does not specify.',
     `Issue categories: ${categories.join(', ')}.`,
     `Report statuses: ${statuses.join(', ')}.`,
     `Priority labels used by the application: ${priorities.join(', ')}. No priority assignment rules are provided; do not invent them.`,
@@ -39,18 +43,27 @@ async function getAssistantReply({
   statuses,
   priorities,
   fetchImpl = globalThis.fetch,
-  baseUrl = process.env.OLLAMA_BASE_URL || DEFAULT_OLLAMA_BASE_URL,
+  baseUrl = process.env.OLLAMA_BASE_URL || (process.env.NODE_ENV === 'production' ? '' : DEFAULT_OLLAMA_BASE_URL),
   model = process.env.OLLAMA_MODEL,
+  apiKey = process.env.OLLAMA_API_KEY,
+  production = process.env.NODE_ENV === 'production',
   timeoutMs = ASSISTANT_TIMEOUT_MS,
 }) {
-  if (!model) {
-    throw new AssistantProviderError('The AI assistant model is not configured yet.', 'not_configured');
+  const selectedModel = typeof model === 'string' && model.trim()
+    ? model.trim()
+    : DEFAULT_OLLAMA_MODEL;
+  if (!baseUrl) {
+    throw new AssistantProviderError('The AI assistant service is not configured yet.', 'not_configured');
   }
 
   let ollamaUrl;
   try {
     const configuredUrl = new URL(baseUrl);
-    if (!['http:', 'https:'].includes(configuredUrl.protocol)) throw new Error('Unsupported protocol');
+    if (!['http:', 'https:'].includes(configuredUrl.protocol) ||
+        configuredUrl.username || configuredUrl.password ||
+        (production && (configuredUrl.protocol !== 'https:' || isLoopbackHostname(configuredUrl.hostname)))) {
+      throw new Error('Unsupported service URL');
+    }
     ollamaUrl = `${configuredUrl.origin}${configuredUrl.pathname.replace(/\/+$/, '')}/api/chat`;
   } catch {
     throw new AssistantProviderError('The AI assistant service configuration is invalid.', 'invalid_configuration');
@@ -69,9 +82,15 @@ async function getAssistantReply({
     const response = await fetchImpl(ollamaUrl, {
       method: 'POST',
       signal: controller.signal,
-      headers: { 'Content-Type': 'application/json' },
+      redirect: 'error',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(typeof apiKey === 'string' && apiKey.trim()
+          ? { Authorization: `Bearer ${apiKey.trim()}` }
+          : {}),
+      },
       body: JSON.stringify({
-        model,
+        model: selectedModel,
         stream: false,
         messages: [
           { role: 'system', content: createSystemPrompt({ categories, statuses, priorities }) },
@@ -119,7 +138,7 @@ async function getAssistantReply({
       throw new AssistantProviderError('The AI assistant timed out. Please try again.', 'timeout');
     }
     throw new AssistantProviderError(
-      'The local AI service could not be reached. Start Ollama and try again.',
+      'The AI assistant service could not be reached. Please try again shortly.',
       'ollama_unavailable',
     );
   } finally {

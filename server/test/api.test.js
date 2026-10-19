@@ -12,7 +12,11 @@ process.env.SUPER_ADMIN_BOOTSTRAP_TOKEN = 'bootstrap-test-only-token';
 const testStoreDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'municipal-service-api-test-'));
 process.env.DATA_STORE_PATH = path.join(testStoreDirectory, 'store.json');
 const assert = require('node:assert/strict');
-const { getStaffByIdFromDb } = require('../db');
+const {
+  getStaffByIdFromDb,
+  selectMigrationFiles,
+  validateMigrationOptIns,
+} = require('../db');
 
 const { app, readStore, writeStore, createToken } = require('../index.js');
 app.set('trust proxy', 1);
@@ -127,6 +131,58 @@ test('PostgreSQL staff lookup selects one staff member by ID without credentials
   assert.deepEqual(staff, { id: 'staff-1', name: 'Operations Staff', email: 'staff@example.test', role: 'staff', isActive: true });
 });
 
+test('pending AI migration is deferred unless explicitly enabled', () => {
+  const migrationFiles = [
+    '001_public_pilot_auth_ownership.sql',
+    '002_municipality_scoping.sql',
+    '003_support_chat.sql',
+    '004_ai_assistant.sql',
+  ];
+  const appliedVersions = new Set(['001_public_pilot_auth_ownership.sql', '002_municipality_scoping.sql']);
+  const environment = {
+    ENABLE_SUPPORT_CHAT_MIGRATION: 'false',
+    ENABLE_AI_ASSISTANT_MIGRATION: 'false',
+  };
+
+  const deferred = selectMigrationFiles(migrationFiles, appliedVersions, environment);
+  assert.equal(deferred.aiAssistantMigrationDeferred, true);
+  assert.deepEqual(deferred.migrationFiles, [
+    '001_public_pilot_auth_ownership.sql',
+    '002_municipality_scoping.sql',
+  ]);
+  assert.doesNotThrow(() => validateMigrationOptIns(deferred.migrationFiles, appliedVersions, environment));
+
+  const enabled = selectMigrationFiles(migrationFiles, appliedVersions, {
+    ...environment,
+    ENABLE_AI_ASSISTANT_MIGRATION: 'true',
+  });
+  assert.equal(enabled.aiAssistantMigrationDeferred, false);
+  assert.ok(enabled.migrationFiles.includes('004_ai_assistant.sql'));
+  assert.doesNotThrow(() => validateMigrationOptIns(enabled.migrationFiles, appliedVersions, {
+    ...environment,
+    ENABLE_AI_ASSISTANT_MIGRATION: 'true',
+  }));
+});
+
+test('pending non-AI migrations still require explicit opt-in', () => {
+  const appliedVersions = new Set(['001_public_pilot_auth_ownership.sql']);
+  const environment = {
+    ENABLE_MUNICIPALITY_SCOPING_MIGRATION: 'false',
+    ENABLE_AI_ASSISTANT_MIGRATION: 'false',
+  };
+  const selected = selectMigrationFiles([
+    '002_municipality_scoping.sql',
+    '004_ai_assistant.sql',
+  ], appliedVersions, environment);
+
+  assert.equal(selected.aiAssistantMigrationDeferred, true);
+  assert.ok(selected.migrationFiles.includes('002_municipality_scoping.sql'));
+  assert.throws(
+    () => validateMigrationOptIns(selected.migrationFiles, appliedVersions, environment),
+    /002_municipality_scoping\.sql is pending/,
+  );
+});
+
 beforeEach(() => {
   resetStore();
   app.locals.mainApiBaseUrl = 'http://main-api.test';
@@ -153,6 +209,8 @@ beforeEach(() => {
 
 afterEach(() => {
   delete app.locals.assistantProvider;
+  delete app.locals.assistantTurnAppender;
+  delete app.locals.aiAssistantSchemaReady;
   delete app.locals.mainApiBaseUrl;
   delete app.locals.mainApiFetch;
   delete app.locals.mainApiTimeoutMs;
@@ -1008,6 +1066,44 @@ test('AI assistant requires a resident and retires resident-to-staff chat routes
   assert.equal(retiredHistory.status, 410);
 });
 
+test('AI assistant returns unavailable while its schema is pending without blocking the API', async () => {
+  app.locals.aiAssistantSchemaReady = false;
+  const headers = {
+    Authorization: residentAuthorization,
+    'Content-Type': 'application/json',
+  };
+  const list = await request('/api/assistant/conversations', {
+    headers: { Authorization: residentAuthorization },
+  });
+  assert.equal(list.status, 503);
+  assert.equal(list.body.conversations, undefined);
+
+  const created = await request('/api/assistant/conversations', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+  });
+  assert.equal(created.status, 503);
+  assert.equal(created.body.conversation, undefined);
+
+  const history = await request(`/api/assistant/conversations/${crypto.randomUUID()}/messages`, {
+    headers: { Authorization: residentAuthorization },
+  });
+  assert.equal(history.status, 503);
+  assert.equal(history.body.messages, undefined);
+
+  const send = await request(`/api/assistant/conversations/${crypto.randomUUID()}/messages`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ content: 'Hello' }),
+  });
+  assert.equal(send.status, 503);
+  assert.equal(send.body.messages, undefined);
+
+  const health = await request('/api/health');
+  assert.equal(health.status, 200);
+});
+
 test('AI assistant validates the forwarded session cookie with the main API', async () => {
   let forwardedCookie;
   const mainApiFetch = createMainApiFetch();
@@ -1050,6 +1146,37 @@ test('AI assistant fails safely when main API session verification is unavailabl
   });
   assert.equal(timedOut.status, 503);
   assert.equal(timedOut.body.message, 'Unable to verify account access right now.');
+});
+
+test('production AI authentication requires an explicit HTTPS main API origin', async () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalMainApiBaseUrl = process.env.MAIN_API_BASE_URL;
+  process.env.NODE_ENV = 'production';
+  process.env.MAIN_API_BASE_URL = '';
+
+  try {
+    app.locals.mainApiBaseUrl = '';
+    const missingOrigin = await request('/api/assistant/conversations', {
+      headers: { Authorization: residentAuthorization },
+    });
+    assert.equal(missingOrigin.status, 503);
+
+    app.locals.mainApiBaseUrl = 'http://127.0.0.1:4003';
+    const localOrigin = await request('/api/assistant/conversations', {
+      headers: { Authorization: residentAuthorization },
+    });
+    assert.equal(localOrigin.status, 503);
+
+    app.locals.mainApiBaseUrl = 'https://api.example.test';
+    const secureOrigin = await request('/api/assistant/conversations', {
+      headers: { Authorization: residentAuthorization },
+    });
+    assert.equal(secureOrigin.status, 200);
+  } finally {
+    process.env.NODE_ENV = originalNodeEnv;
+    if (originalMainApiBaseUrl === undefined) delete process.env.MAIN_API_BASE_URL;
+    else process.env.MAIN_API_BASE_URL = originalMainApiBaseUrl;
+  }
 });
 
 test('AI conversations persist turns and remain private to their resident', async () => {
@@ -1239,7 +1366,7 @@ test('AI assistant message requests are rate limited per client', async () => {
 
 test('AI provider failures return an error and do not persist a partial turn', async () => {
   app.locals.assistantProvider = async () => {
-    throw new Error('provider timeout');
+    throw new Error('provider timeout with private user content: sensitive question');
   };
   const created = await request('/api/assistant/conversations', {
     method: 'POST',
@@ -1247,19 +1374,70 @@ test('AI provider failures return an error and do not persist a partial turn', a
     body: JSON.stringify({}),
   });
   const conversationId = created.body.conversation.id;
-  const sent = await request(`/api/assistant/conversations/${conversationId}/messages`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
-    body: JSON.stringify({ content: 'Please help.' }),
-  });
+  const loggedErrors = [];
+  const originalConsoleError = console.error;
+  console.error = (...args) => loggedErrors.push(args);
+  let sent;
+  try {
+    sent = await request(`/api/assistant/conversations/${conversationId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+      body: JSON.stringify({ content: 'Please help with private account issue.' }),
+    });
+  } finally {
+    console.error = originalConsoleError;
+  }
   assert.equal(sent.status, 503);
   assert.match(sent.body.message, /temporarily unavailable/);
+  assert.deepEqual(loggedErrors, [[
+    'AI assistant request failed:',
+    { stage: 'provider', errorClass: 'Error', errorCode: 'unknown' },
+  ]]);
+  assert.equal(JSON.stringify(loggedErrors).includes('sensitive question'), false);
+  assert.equal(JSON.stringify(loggedErrors).includes('private account issue'), false);
 
   const history = await request(`/api/assistant/conversations/${conversationId}/messages`, {
     headers: { Authorization: residentAuthorization },
   });
   assert.equal(history.status, 200);
   assert.deepEqual(history.body.messages, []);
+});
+
+test('AI assistant safely logs turn persistence failures without exposing message content', async () => {
+  app.locals.assistantProvider = async () => 'Generated answer.';
+  app.locals.assistantTurnAppender = async () => {
+    const error = new Error('database failure containing private message');
+    error.code = 'secret-private-message';
+    throw error;
+  };
+  const created = await request('/api/assistant/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify({}),
+  });
+  const conversationId = created.body.conversation.id;
+  const loggedErrors = [];
+  const originalConsoleError = console.error;
+  console.error = (...args) => loggedErrors.push(args);
+  let sent;
+  try {
+    sent = await request(`/api/assistant/conversations/${conversationId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+      body: JSON.stringify({ content: 'This message must not be logged.' }),
+    });
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  assert.equal(sent.status, 503);
+  assert.equal(sent.body.message, 'The AI assistant is temporarily unavailable. Please try again.');
+  assert.deepEqual(loggedErrors, [[
+    'AI assistant request failed:',
+    { stage: 'turn_persistence', errorClass: 'Error', errorCode: 'unknown' },
+  ]]);
+  assert.equal(JSON.stringify(loggedErrors).includes('private message'), false);
+  assert.equal(JSON.stringify(loggedErrors).includes('must not be logged'), false);
 });
 
 test.skip('resident and staff can exchange persisted support messages with per-user unread state', async () => {

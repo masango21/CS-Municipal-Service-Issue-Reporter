@@ -22,6 +22,7 @@ const pool = !useFileStore && hasDatabaseUrl
       ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: true },
     })
   : null;
+let aiAssistantSchemaReady = false;
 
 const DEFAULT_CATEGORIES = [
   'Pothole',
@@ -36,6 +37,45 @@ const DEFAULT_CATEGORIES = [
   'Electrical Infrastructure',
   'Other Municipal Issue',
 ];
+
+function selectMigrationFiles(allMigrationFiles, appliedVersions, environment = process.env) {
+  let aiAssistantMigrationDeferred = false;
+  const migrationFiles = allMigrationFiles.filter((file) => {
+    if (file === '003_support_chat.sql' &&
+        environment.ENABLE_SUPPORT_CHAT_MIGRATION !== 'true' &&
+        !appliedVersions.has(file)) {
+      return false;
+    }
+    if (file === '004_ai_assistant.sql' &&
+        environment.ENABLE_AI_ASSISTANT_MIGRATION !== 'true' &&
+        !appliedVersions.has(file)) {
+      aiAssistantMigrationDeferred = true;
+      return false;
+    }
+    return true;
+  });
+  return { migrationFiles, aiAssistantMigrationDeferred };
+}
+
+function validateMigrationOptIns(migrationFiles, appliedVersions, environment = process.env) {
+  const gatedMigrations = [
+    ['002_municipality_scoping.sql', 'ENABLE_MUNICIPALITY_SCOPING_MIGRATION'],
+    ['003_support_chat.sql', 'ENABLE_SUPPORT_CHAT_MIGRATION'],
+    ['004_ai_assistant.sql', 'ENABLE_AI_ASSISTANT_MIGRATION'],
+  ];
+  for (const [migration, enableFlag] of gatedMigrations) {
+    if (migrationFiles.includes(migration) && !appliedVersions.has(migration) &&
+        environment[enableFlag] !== 'true') {
+      throw new Error(
+        `${migration} is pending. Verify it on a disposable PostgreSQL database and explicitly enable it with ${enableFlag}=true before applying.`,
+      );
+    }
+  }
+}
+
+function isAiAssistantSchemaReady() {
+  return !pool || aiAssistantSchemaReady;
+}
 
 async function initDatabase() {
   if (!pool) {
@@ -58,24 +98,16 @@ async function initDatabase() {
       .sort();
     const appliedMigrations = await client.query('SELECT version FROM schema_migrations;');
     const appliedVersions = new Set(appliedMigrations.rows.map((row) => row.version));
-    const migrationFiles = allMigrationFiles.filter((file) =>
-      file !== '003_support_chat.sql' ||
-      process.env.ENABLE_SUPPORT_CHAT_MIGRATION === 'true' ||
-      appliedVersions.has(file),
+    const { migrationFiles, aiAssistantMigrationDeferred } = selectMigrationFiles(
+      allMigrationFiles,
+      appliedVersions,
     );
-    const gatedMigrations = [
-      ['002_municipality_scoping.sql', 'ENABLE_MUNICIPALITY_SCOPING_MIGRATION'],
-      ['003_support_chat.sql', 'ENABLE_SUPPORT_CHAT_MIGRATION'],
-      ['004_ai_assistant.sql', 'ENABLE_AI_ASSISTANT_MIGRATION'],
-    ];
-    for (const [migration, enableFlag] of gatedMigrations) {
-      if (migrationFiles.includes(migration) && !appliedVersions.has(migration) &&
-          process.env[enableFlag] !== 'true') {
-        throw new Error(
-          `${migration} is pending. Verify it on a disposable PostgreSQL database and explicitly enable it with ${enableFlag}=true before applying.`,
-        );
-      }
+    if (aiAssistantMigrationDeferred) {
+      console.warn(
+        'AI assistant persistence is unavailable: migration 004 is pending and remains disabled.',
+      );
     }
+    validateMigrationOptIns(migrationFiles, appliedVersions);
 
     for (const version of migrationFiles) {
       const existing = await client.query('SELECT 1 FROM schema_migrations WHERE version = $1;', [version]);
@@ -92,6 +124,7 @@ async function initDatabase() {
         throw error;
       }
     }
+    aiAssistantSchemaReady = !aiAssistantMigrationDeferred;
   } finally {
     try {
       await client.query('SELECT pg_advisory_unlock(19791104);');
@@ -700,6 +733,9 @@ async function appendAiAssistantTurn({ conversationId, residentId, userContent, 
 module.exports = {
   pool,
   initDatabase,
+  selectMigrationFiles,
+  validateMigrationOptIns,
+  isAiAssistantSchemaReady,
   getReportCountFromDb,
   getResidentByEmail,
   createResidentInDb,
