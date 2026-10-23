@@ -1301,6 +1301,30 @@ test('AI assistant requires a resident and retires resident-to-staff chat routes
   assert.equal(retiredHistory.status, 410);
 });
 
+test('AI assistant cookie-authenticated writes reject missing and untrusted origins', async () => {
+  const token = residentAuthorization.replace(/^Bearer\s+/i, '');
+  const headers = {
+    'Content-Type': 'application/json',
+    Cookie: `msr_session=${token}`,
+  };
+
+  const missingOrigin = await request('/api/assistant/conversations', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+  });
+  assert.equal(missingOrigin.status, 403);
+  assert.equal(missingOrigin.body.message, 'A valid same-origin request is required');
+
+  const untrustedOrigin = await request('/api/assistant/conversations', {
+    method: 'POST',
+    headers: { ...headers, Origin: 'https://unapproved.invalid' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(untrustedOrigin.status, 403);
+  assert.equal(untrustedOrigin.body.message, 'A valid same-origin request is required');
+});
+
 test('AI assistant returns unavailable while its schema is pending without blocking the API', async () => {
   app.locals.aiAssistantSchemaReady = false;
   const headers = {

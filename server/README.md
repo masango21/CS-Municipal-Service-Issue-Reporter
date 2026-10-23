@@ -23,9 +23,9 @@ Set these values in ignored `.env` for local development or in the hosting provi
 - `CLIENT_ORIGIN`: one or more exact frontend origins, comma-separated and including the scheme (for example `https://reports.example.gov.za,https://preview.example.gov.za`). Do not include paths or credentials. Production requires at least one HTTPS origin; cookie-authenticated writes reject missing and untrusted `Origin` headers.
 - `SESSION_COOKIE_SAME_SITE`: defaults to `lax`; use frontend/API custom domains under the same registrable domain.
 - `SUPER_ADMIN_BOOTSTRAP_TOKEN`: one-time high-entropy secret for first super-admin setup. Remove it from the server environment after bootstrap.
-- `OLLAMA_BASE_URL`: Ollama API base URL. Local development defaults to `http://127.0.0.1:11434`; production must explicitly configure an HTTPS inference-service URL.
-- `OLLAMA_MODEL`: installed model tag used by the assistant; the project example is `llama3.2:3b`.
-- `OLLAMA_API_KEY`: optional server-only bearer credential for an inference service that requires it. Leave unset for a secured Ollama service that does not use bearer authentication.
+- `OLLAMA_BASE_URL`: Ollama API base URL. Local development defaults to `http://127.0.0.1:11434`; production defaults to `https://ollama.com` and can override it with another HTTPS-compatible service.
+- `OLLAMA_MODEL`: model identifier used by the assistant. Local development defaults to `llama3.2:3b`; production must explicitly set a model identifier available to the configured Ollama Cloud account.
+- `OLLAMA_API_KEY`: required in production for Ollama Cloud; sent only as a server-side Bearer credential. Configure it in Render's protected environment settings, never in Vercel or a `NEXT_PUBLIC_*` variable.
 - `MAIN_API_BASE_URL`: server-only origin used by the assistant routes to verify resident sessions and fetch owner-scoped reports from this API. Local development defaults to `http://127.0.0.1:4000`; production must explicitly configure the API's HTTPS origin.
 - `MDB_MUNICIPALITY_FEATURE_LAYER_URL`: optional override for the authoritative Municipal Demarcation Board polygon layer. The current public item is titled MDB Local Municipalities 2021 but its linked FeatureServer describes a 2018 layer; verify the current demarcation release before a public pilot.
 - `REVERSE_GEOCODER_URL`: optional server-side reverse-geocoding endpoint; defaults to OpenStreetMap Nominatim. Configure an alternative endpoint for sustained/public service.
@@ -38,7 +38,7 @@ Never commit environment files. Production refuses to start without PostgreSQL. 
 
 Residents must sign in to submit reports. `/api/my/reports` returns only the signed-in resident's reports. Public responses omit reporter identity and staff-only notes/assignment fields. Destructive operations require staff authorization, and cookie-authenticated writes require an allowed `Origin`.
 
-The resident AI Assistant uses `/api/assistant/conversations` and `/api/assistant/conversations/:id/messages` on the same API as the rest of the application. Conversations are private to the authenticated resident and stored in separate AI-assistant tables (migration 004) or the isolated local assistant file store. Resident sessions and report ownership are checked against the configured main API by forwarding only the existing HttpOnly session cookie to `/api/auth/session` and `/api/my/reports`. The assistant sends bounded conversation context to Ollama's `/api/chat` endpoint and includes only a minimal verified report summary. Legacy support-chat tables and records are not reused or sent to Ollama. Provider failures are returned safely; there are no canned fallback responses. The model URL, optional bearer credential, and model name are server-only settings.
+The resident AI Assistant uses `/api/assistant/conversations` and `/api/assistant/conversations/:id/messages` on the same API as the rest of the application. Conversations are private to the authenticated resident and stored in separate AI-assistant tables (migration 004) or the isolated local assistant file store. Resident sessions and report ownership are checked against the configured main API by forwarding only the existing HttpOnly session cookie to `/api/auth/session` and `/api/my/reports`. The assistant sends bounded conversation context to Ollama's `/api/chat` endpoint and includes only a minimal verified report summary. Legacy support-chat tables and records are not reused or sent to Ollama. Provider failures are returned safely; there are no canned fallback responses. The model URL, bearer credential, and model name are server-only settings.
 
 ### Local AI Assistant (Windows)
 
@@ -50,7 +50,7 @@ ollama list
 Invoke-RestMethod http://127.0.0.1:11434/api/tags
 ```
 
-`.env.example` files are templates and are not automatically loaded by dotenv. Copy `server/.env.example` to the ignored `server/.env`, then ensure it contains `OLLAMA_BASE_URL=http://127.0.0.1:11434` and `OLLAMA_MODEL=llama3.2:3b`. The API defaults to the project model if `OLLAMA_MODEL` is absent or blank; the model still needs to be installed in Ollama.
+`.env.example` files are templates and are not automatically loaded by dotenv. Copy `server/.env.example` to the ignored `server/.env`; its Ollama URL and `llama3.2:3b` model are local-development defaults. Production does not fall back to that model: it requires an explicit `OLLAMA_MODEL` and `OLLAMA_API_KEY`.
 
 For the normal local setup, use the main API on port 4000 and the client on port 3000. Configure `USE_FILE_STORE=true`, a development-only `JWT_SECRET`, and `ADMIN_REGISTRATION_KEYS` in the ignored `server/.env`. Set `API_BASE_URL=http://localhost:4000` in `client/.env.local` or use the example file. Start both services from the repository root:
 
@@ -59,6 +59,28 @@ npm run dev
 ```
 
 The chat widget sends requests through the same-origin Next.js `/api/assistant/*` proxy as other API requests. No port-4001 assistant service is required. Sign in as a resident at `http://localhost:3000`, open AI Assistant, and ask a municipal-help question. Confirm model availability with `ollama list` or `/api/tags`. If the model is not installed, run `ollama pull llama3.2:3b`. If Ollama is unreachable, start the Ollama application and confirm `/api/tags` responds. The UI shows a safe error and Retry action when the service is unavailable. Do not expose model URLs or provider credentials as `NEXT_PUBLIC_*` variables.
+
+### Ollama Cloud in production
+
+The production API calls the documented `https://ollama.com/api/chat` endpoint over HTTPS
+with `Authorization: Bearer <OLLAMA_API_KEY>`, `stream: false`, and reads the answer from
+`message.content`. Ollama Cloud does not require a local Ollama installation. Configure
+these values on the Render API service:
+
+- `OLLAMA_BASE_URL`: normally `https://ollama.com`; the backend appends `/api/chat`.
+- `OLLAMA_MODEL`: the exact model `name` available to your Ollama Cloud account. Check the
+  [Cloud model catalog](https://ollama.com/search?c=cloud) or the documented model-list API
+  at <https://ollama.com/api/tags>. The documentation's example model does not guarantee
+  account availability. Production has no fallback to the local `llama3.2:3b` tag.
+- `OLLAMA_API_KEY`: create a key at <https://ollama.com/settings/keys> and enter it only in
+  Render's protected environment settings. Never put it in Vercel, browser code, source
+  control, or a `NEXT_PUBLIC_*` variable.
+
+The Render Blueprint runs the Express API only; it does not install Ollama or choose a model
+for your Cloud account. `.env.example` is a local template and does not configure Render.
+For an existing Render service, set these values in its environment and redeploy only when
+you choose to do so. PostgreSQL-backed assistant history still requires separately approved
+verification and application of migration 004; this task does not enable or apply it.
 
 ### Isolated local assistant API validation
 

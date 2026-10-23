@@ -1,6 +1,7 @@
 const ASSISTANT_TIMEOUT_MS = 90_000;
 const MAX_HISTORY_MESSAGES = 20;
 const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
+const DEFAULT_OLLAMA_CLOUD_BASE_URL = 'https://ollama.com';
 const DEFAULT_OLLAMA_MODEL = 'llama3.2:3b';
 const isLoopbackHostname = (hostname) =>
   /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$|\.localhost$/i.test(hostname);
@@ -43,7 +44,7 @@ async function getAssistantReply({
   statuses,
   priorities,
   fetchImpl = globalThis.fetch,
-  baseUrl = process.env.OLLAMA_BASE_URL || (process.env.NODE_ENV === 'production' ? '' : DEFAULT_OLLAMA_BASE_URL),
+  baseUrl = process.env.OLLAMA_BASE_URL,
   model = process.env.OLLAMA_MODEL,
   apiKey = process.env.OLLAMA_API_KEY,
   production = process.env.NODE_ENV === 'production',
@@ -51,14 +52,27 @@ async function getAssistantReply({
 }) {
   const selectedModel = typeof model === 'string' && model.trim()
     ? model.trim()
-    : DEFAULT_OLLAMA_MODEL;
-  if (!baseUrl) {
-    throw new AssistantProviderError('The AI assistant service is not configured yet.', 'not_configured');
+    : production ? '' : DEFAULT_OLLAMA_MODEL;
+  if (!selectedModel) {
+    throw new AssistantProviderError(
+      'The AI assistant model is not configured. Set OLLAMA_MODEL to a model available to your Ollama Cloud account.',
+      'model_not_configured',
+    );
+  }
+  if (typeof apiKey === 'string') apiKey = apiKey.trim();
+  if (production && (typeof apiKey !== 'string' || !apiKey.trim())) {
+    throw new AssistantProviderError(
+      'The AI assistant credentials are not configured. Set OLLAMA_API_KEY in the server environment.',
+      'api_key_not_configured',
+    );
   }
 
+  const configuredBaseUrl = typeof baseUrl === 'string' && baseUrl.trim()
+    ? baseUrl.trim()
+    : production ? DEFAULT_OLLAMA_CLOUD_BASE_URL : DEFAULT_OLLAMA_BASE_URL;
   let ollamaUrl;
   try {
-    const configuredUrl = new URL(baseUrl);
+    const configuredUrl = new URL(configuredBaseUrl);
     if (!['http:', 'https:'].includes(configuredUrl.protocol) ||
         configuredUrl.username || configuredUrl.password ||
         (production && (configuredUrl.protocol !== 'https:' || isLoopbackHostname(configuredUrl.hostname)))) {
@@ -103,12 +117,24 @@ async function getAssistantReply({
     if (!response.ok) {
       const result = await response.json().catch(() => null);
       const providerMessage = typeof result?.error === 'string' ? result.error : '';
-      const modelUnavailable = response.status === 404 &&
+      const modelUnavailable = [400, 404].includes(response.status) &&
         /model.*(?:not found|pull|download)|(?:not found|pull|download).*model/i.test(providerMessage);
+      if ([401, 403].includes(response.status)) {
+        throw new AssistantProviderError(
+          'The AI assistant could not authenticate with Ollama Cloud. Check OLLAMA_API_KEY in the server environment.',
+          'invalid_credentials',
+        );
+      }
       if (modelUnavailable) {
         throw new AssistantProviderError(
-          'The configured AI model is not installed. Pull the model and try again.',
+          'The configured AI model is unavailable. Confirm OLLAMA_MODEL matches a model available to your Ollama Cloud account.',
           'model_unavailable',
+        );
+      }
+      if (response.status === 429) {
+        throw new AssistantProviderError(
+          'The AI assistant is being rate limited by Ollama Cloud. Please try again shortly.',
+          'rate_limited',
         );
       }
       throw new AssistantProviderError(

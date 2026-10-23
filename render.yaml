@@ -24,8 +24,8 @@ services:
       - key: MAIN_API_BASE_URL
         sync: true
       - key: OLLAMA_BASE_URL
-        sync: false
+        value: https://ollama.com
       - key: OLLAMA_MODEL
-        value: llama3.2:3b
+        sync: false
       - key: OLLAMA_API_KEY
         sync: false

@@ -72,29 +72,27 @@ test('Ollama provider uses the project model when configuration is unset or blan
   assert.equal(captured.model, 'llama3.2:3b');
 });
 
-test('production Ollama configuration requires an explicit HTTPS service and keeps credentials server-side', async () => {
+test('production Ollama Cloud defaults its host and keeps credentials server-side', async () => {
   const base = {
     ...knowledge,
-    model: 'llama3.2:3b',
+    model: 'account-model',
     messages: [{ role: 'user', content: 'Hello' }],
+    apiKey: 'test-provider-key',
     production: true,
   };
   let requestCount = 0;
-  const fetchImpl = async (_url, options) => {
+  let capturedUrl;
+  const fetchImpl = async (url, options) => {
+    capturedUrl = url;
     requestCount += 1;
     assert.equal(options.headers.Authorization, 'Bearer test-provider-key');
     assert.equal(options.body.includes('test-provider-key'), false);
     return createResponse(200, { message: { content: 'Hello.' } });
   };
 
-  await assert.rejects(
-    getAssistantReply({
-      ...base,
-      baseUrl: '',
-      fetchImpl,
-    }),
-    (error) => error instanceof AssistantProviderError && error.code === 'not_configured',
-  );
+  const defaultCloudReply = await getAssistantReply({ ...base, baseUrl: '', fetchImpl });
+  assert.equal(defaultCloudReply, 'Hello.');
+  assert.equal(capturedUrl, 'https://ollama.com/api/chat');
   await assert.rejects(
     getAssistantReply({
       ...base,
@@ -119,27 +117,82 @@ test('production Ollama configuration requires an explicit HTTPS service and kee
     fetchImpl,
   });
   assert.equal(reply, 'Hello.');
-  assert.equal(requestCount, 1);
+  assert.equal(requestCount, 2);
 });
 
-test('Ollama provider reports a missing local model without exposing provider details', async () => {
+test('Ollama Cloud reports an unavailable model without exposing provider details', async () => {
   let requestCount = 0;
+  for (const status of [400, 404]) {
+    await assert.rejects(
+      getAssistantReply({
+        ...knowledge,
+        model: 'account-model',
+        apiKey: 'test-provider-key',
+        production: true,
+        messages: [{ role: 'user', content: 'Hello' }],
+        fetchImpl: async () => {
+          requestCount += 1;
+          return createResponse(status, { error: "model 'account-model' not found" });
+        },
+      }),
+      (error) => error instanceof AssistantProviderError &&
+        error.code === 'model_unavailable' &&
+        error.message.includes('OLLAMA_MODEL') &&
+        !error.message.includes('account-model'),
+    );
+  }
+  assert.equal(requestCount, 2);
+});
+
+test('Ollama Cloud requires an explicit production model and API key', async () => {
+  const base = {
+    ...knowledge,
+    production: true,
+    messages: [{ role: 'user', content: 'Hello' }],
+    fetchImpl: async () => assert.fail('Provider must not be called with missing configuration'),
+  };
+
+  await assert.rejects(
+    getAssistantReply({ ...base, model: '', apiKey: 'test-provider-key' }),
+    (error) => error instanceof AssistantProviderError && error.code === 'model_not_configured',
+  );
+  await assert.rejects(
+    getAssistantReply({ ...base, model: 'account-model', apiKey: '' }),
+    (error) => error instanceof AssistantProviderError && error.code === 'api_key_not_configured',
+  );
+});
+
+test('Ollama Cloud returns safe authentication and rate-limit errors', async () => {
+  const base = {
+    ...knowledge,
+    model: 'account-model',
+    apiKey: 'test-provider-key',
+    production: true,
+    messages: [{ role: 'user', content: 'Hello' }],
+  };
+
+  for (const status of [401, 403]) {
+    await assert.rejects(
+      getAssistantReply({
+        ...base,
+        fetchImpl: async () => createResponse(status, { error: 'private credential detail' }),
+      }),
+      (error) => error instanceof AssistantProviderError &&
+        error.code === 'invalid_credentials' &&
+        !error.message.includes('private credential detail') &&
+        !error.message.includes('test-provider-key'),
+    );
+  }
+
   await assert.rejects(
     getAssistantReply({
-      ...knowledge,
-      model: 'llama3.2:3b',
-      messages: [{ role: 'user', content: 'Hello' }],
-      fetchImpl: async () => {
-        requestCount += 1;
-        return createResponse(404, { error: "model 'llama3.2:3b' not found, try pulling it first" });
-      },
+      ...base,
+      fetchImpl: async () => createResponse(429, { error: 'private usage detail' }),
     }),
     (error) => error instanceof AssistantProviderError &&
-      error.code === 'model_unavailable' &&
-      error.message.includes('Pull the model') &&
-      !error.message.includes('llama3.2:3b'),
+      error.code === 'rate_limited' &&
+      !error.message.includes('private usage detail'),
   );
-  assert.equal(requestCount, 1);
 });
 
 test('Ollama provider safely handles service, malformed, empty, and oversized responses', async () => {

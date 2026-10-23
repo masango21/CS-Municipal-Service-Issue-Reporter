@@ -3305,6 +3305,186 @@
   "chatConversations": [],
   "aiAssistantConversations": [
     {
+      "id": "864394f3-20a7-4cb7-ad71-c48082eecfda",
+      "residentId": "USR-1790753528499-f27c54",
+      "createdAt": "2026-10-22T11:48:00.215Z",
+      "updatedAt": "2026-10-22T11:48:22.945Z",
+      "messages": [
+        {
+          "id": "36e49f3c-473d-43e2-b8ae-276931a3f376",
+          "conversationId": "864394f3-20a7-4cb7-ad71-c48082eecfda",
+          "role": "user",
+          "content": "What report categories are available?",
+          "createdAt": "2026-10-22T11:48:22.945Z"
+        },
+        {
+          "id": "45668a28-aeb2-4dbb-99f6-d241e3c575bd",
+          "conversationId": "864394f3-20a7-4cb7-ad71-c48082eecfda",
+          "role": "assistant",
+          "content": "There are 11 report categories available in the application:\n\n1. Pothole\n2. Water Leak\n3. Burst Pipe\n4. Broken Streetlight\n5. Damaged Road\n6. Illegal Dumping\n7. Blocked Drain\n8. Sewer Problem\n9. Traffic Signal Problem\n10. Electrical Infrastructure\n11. Other Municipal Issue",
+          "createdAt": "2026-10-22T11:48:22.945Z"
+        }
+      ]
+    },
+    {
+      "id": "60e1516b-95f1-483c-a4d2-d4f5a9e9f5bf",
+      "residentId": "USR-1790753528499-f27c54",
+      "createdAt": "2026-10-22T11:36:00.521Z",
+      "updatedAt": "2026-10-22T11:36:22.461Z",
+      "messages": [
+        {
+          "id": "ea323354-da9f-4cc8-94dc-bb6460afbbda",
+          "conversationId": "60e1516b-95f1-483c-a4d2-d4f5a9e9f5bf",
+          "role": "user",
+          "content": "What report categories are available?",
+          "createdAt": "2026-10-22T11:36:22.461Z"
+        },
+        {
+          "id": "890f0ea9-1a65-4c33-9be5-d741bbfd7b27",
+          "conversationId": "60e1516b-95f1-483c-a4d2-d4f5a9e9f5bf",
+          "role": "assistant",
+          "content": "There are 11 report categories available in the application: \n\n1. Pothole\n2. Water Leak\n3. Burst Pipe\n4. Broken Streetlight\n5. Damaged Road\n6. Illegal Dumping\n7. Blocked Drain\n8. Sewer Problem\n9. Traffic Signal Problem\n10. Electrical Infrastructure\n11. Other Municipal Issue",
+          "createdAt": "2026-10-22T11:36:22.461Z"
+        }
+      ]
+    },
+    {
+      "id": "b16c4104-c40f-47d5-b80b-909d91b8e184",
+      "residentId": "USR-1790753528499-f27c54",
+      "createdAt": "2026-10-22T06:56:13.126Z",
+      "updatedAt": "2026-10-22T06:56:36.232Z",
+      "messages": [
+        {
+          "id": "d4490568-d7bd-488c-8a4b-47b80a430d85",
+          "conversationId": "b16c4104-c40f-47d5-b80b-909d91b8e184",
+          "role": "user",
+          "content": "What report categories are available?",
+          "createdAt": "2026-10-22T06:56:36.232Z"
+        },
+        {
+          "id": "42daf2ae-18a5-4da3-ac51-370c819a3b33",
+          "conversationId": "b16c4104-c40f-47d5-b80b-909d91b8e184",
+          "role": "assistant",
+          "content": "There are 13 available report categories:\n\n1. Pothole\n2. Water Leak\n3. Burst Pipe\n4. Broken Streetlight\n5. Damaged Road\n6. Illegal Dumping\n7. Blocked Drain\n8. Sewer Problem\n9. Traffic Signal Problem\n10. Electrical Infrastructure\n11. Other Municipal Issue\n\nThese categories are listed in the application and can be selected by the resident when submitting a new report.",
+          "createdAt": "2026-10-22T06:56:36.232Z"
+        }
+      ]
+    },
+    {
+      "id": "5de0662e-6867-4c70-8f59-4944aed98912",
+      "residentId": "USR-1790753528499-f27c54",
+      "createdAt": "2026-10-21T08:57:20.935Z",
+      "updatedAt": "2026-10-21T09:00:34.401Z",
+      "messages": [
+        {
+          "id": "ae36a8d2-46c7-4b15-a5a8-8b9df5160ca3",
+          "conversationId": "5de0662e-6867-4c70-8f59-4944aed98912",
+          "role": "user",
+          "content": "How do I report a municipal problem?",
+          "createdAt": "2026-10-21T08:57:31.968Z"
+        },
+        {
+          "id": "442eab3e-4cb9-4fec-92ac-70d2e11752c1",
+          "conversationId": "5de0662e-6867-4c70-8f59-4944aed98912",
+          "role": "assistant",
+          "content": "To report a municipal problem, you'll need to:\n\n1. Sign in or register for an account at /login or /register.\n2. Open the application at /report.\n3. Enter a title for your report.\n4. Describe the issue in detail.\n5. Select a category from the list.\n6. Place a map pin to indicate the location of the issue.\n7. (Optional) Attach an image to support your report, if applicable.\n\nThat's it. Once you've submitted your report, the application will display the report details, but it does not specify what will happen next or who will review your report.",
+          "createdAt": "2026-10-21T08:57:31.968Z"
+        },
+        {
+          "id": "38d9586d-ce20-4109-ba1c-4152c4f75bcb",
+          "conversationId": "5de0662e-6867-4c70-8f59-4944aed98912",
+          "role": "user",
+          "content": "who is nkosinathi",
+          "createdAt": "2026-10-21T08:57:51.826Z"
+        },
+        {
+          "id": "ecfd09e4-a738-4dae-a491-d77d5df5c801",
+          "conversationId": "5de0662e-6867-4c70-8f59-4944aed98912",
+          "role": "assistant",
+          "content": "I don't have any information about a person named Nkosinathi.",
+          "createdAt": "2026-10-21T08:57:51.826Z"
+        },
+        {
+          "id": "987f6d8e-5fc9-428f-bb8d-6d8bc7663e46",
+          "conversationId": "5de0662e-6867-4c70-8f59-4944aed98912",
+          "role": "user",
+          "content": "which provinces have more reports",
+          "createdAt": "2026-10-21T08:58:43.696Z"
+        },
+        {
+          "id": "eef074b8-ad7c-472a-a644-8077cfac2314",
+          "conversationId": "5de0662e-6867-4c70-8f59-4944aed98912",
+          "role": "assistant",
+          "content": "I don't have information on the number of reports for specific provinces. The application does not provide this data, and I don't have access to real-time or historical reporting data.",
+          "createdAt": "2026-10-21T08:58:43.696Z"
+        },
+        {
+          "id": "367c4299-8dca-4b16-ab04-3fe92028ea15",
+          "conversationId": "5de0662e-6867-4c70-8f59-4944aed98912",
+          "role": "user",
+          "content": "make a research",
+          "createdAt": "2026-10-21T08:59:01.452Z"
+        },
+        {
+          "id": "4b63d161-e62f-4ac6-84f2-90edd72c41c1",
+          "conversationId": "5de0662e-6867-4c70-8f59-4944aed98912",
+          "role": "assistant",
+          "content": "I'm an AI assistant, I don't have the capability to conduct external research or access external data. My training data is based on the provided application facts, and I can only provide information within that scope.\n\nIf you'd like to know the number of reports for a specific province, I recommend checking the application's /issues page or contacting the municipality directly, if possible.",
+          "createdAt": "2026-10-21T08:59:01.452Z"
+        },
+        {
+          "id": "9eecc32a-926f-4070-9ec7-cb341efe481c",
+          "conversationId": "5de0662e-6867-4c70-8f59-4944aed98912",
+          "role": "user",
+          "content": "what do you know",
+          "createdAt": "2026-10-21T08:59:36.406Z"
+        },
+        {
+          "id": "ca875156-fc0e-4bb3-9655-83c5a8394004",
+          "conversationId": "5de0662e-6867-4c70-8f59-4944aed98912",
+          "role": "assistant",
+          "content": "I can provide information within the scope of the application facts:\n\n* I know how to report a municipal problem: sign in or register, open the application, enter a title and description, select a category, place a map pin, and attach an optional image.\n* I know the available categories for reporting issues: Pothole, Water Leak, Burst Pipe, Broken Streetlight, Damaged Road, Illegal Dumping, Blocked Drain, Sewer Problem, Traffic Signal Problem, Electrical Infrastructure, and Other Municipal Issue.\n* I know the available priorities: Low, Medium, High, Critical.\n* I know that report statuses are: Reported, Under Review, Assigned, In Progress, Resolved, and Closed.\n* I don't know who receives a new report or what happens after submission.\n* I don't have information on password recovery or email verification.\n* I can provide information on how to submit a new report, but not on what happens after submission.",
+          "createdAt": "2026-10-21T08:59:36.406Z"
+        },
+        {
+          "id": "3cfe3655-53db-484e-9114-71d2ef0a0488",
+          "conversationId": "5de0662e-6867-4c70-8f59-4944aed98912",
+          "role": "user",
+          "content": "thabk you",
+          "createdAt": "2026-10-21T09:00:34.401Z"
+        },
+        {
+          "id": "d266d042-a8c5-49ed-946b-bfc18a2f1bb2",
+          "conversationId": "5de0662e-6867-4c70-8f59-4944aed98912",
+          "role": "assistant",
+          "content": "You're welcome! It was a pleasure assisting you with the application facts. If you have any more questions or need help with anything else, feel free to ask!",
+          "createdAt": "2026-10-21T09:00:34.401Z"
+        }
+      ]
+    },
+    {
+      "id": "45f0581d-f7c2-46f6-99b6-b0b8388c950a",
+      "residentId": "USR-1790753528499-f27c54",
+      "createdAt": "2026-10-21T08:56:48.095Z",
+      "updatedAt": "2026-10-21T08:57:07.298Z",
+      "messages": [
+        {
+          "id": "3b716da8-cf30-4f02-9f52-71db9de9ae81",
+          "conversationId": "45f0581d-f7c2-46f6-99b6-b0b8388c950a",
+          "role": "user",
+          "content": "How do I select my municipality?",
+          "createdAt": "2026-10-21T08:57:07.298Z"
+        },
+        {
+          "id": "a188d25e-5f20-4866-ba34-e225ec19650e",
+          "conversationId": "45f0581d-f7c2-46f6-99b6-b0b8388c950a",
+          "role": "assistant",
+          "content": "The application does not specify how to select the municipality for a new report. I do not know how to select the municipality.",
+          "createdAt": "2026-10-21T08:57:07.298Z"
+        }
+      ]
+    },
+    {
       "id": "51cdeac3-278d-43b5-856f-a751dc926efd",
       "residentId": "USR-1790753528499-f27c54",
       "createdAt": "2026-10-19T13:50:26.037Z",
