@@ -10,7 +10,7 @@ the Vercel preview origin:
 The API's global CSRF origin guard rejects cookie-authenticated write requests when the
 browser `Origin` is not an exact member of `CLIENT_ORIGIN`. The committed Render Blueprint
 currently lists only two earlier Vercel origins. This same guard applies to report and map
-requests as well as the assistant.
+requests.
 
 ## Objective
 

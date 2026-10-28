@@ -22,8 +22,6 @@ const pool = !useFileStore && hasDatabaseUrl
       ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: true },
     })
   : null;
-let aiAssistantSchemaReady = false;
-
 const DEFAULT_CATEGORIES = [
   'Pothole',
   'Water Leak',
@@ -39,29 +37,21 @@ const DEFAULT_CATEGORIES = [
 ];
 
 function selectMigrationFiles(allMigrationFiles, appliedVersions, environment = process.env) {
-  let aiAssistantMigrationDeferred = false;
-  const migrationFiles = allMigrationFiles.filter((file) => {
+  return allMigrationFiles.filter((file) => {
+    if (file === '004_ai_assistant.sql') return false;
     if (file === '003_support_chat.sql' &&
         environment.ENABLE_SUPPORT_CHAT_MIGRATION !== 'true' &&
         !appliedVersions.has(file)) {
       return false;
     }
-    if (file === '004_ai_assistant.sql' &&
-        environment.ENABLE_AI_ASSISTANT_MIGRATION !== 'true' &&
-        !appliedVersions.has(file)) {
-      aiAssistantMigrationDeferred = true;
-      return false;
-    }
     return true;
   });
-  return { migrationFiles, aiAssistantMigrationDeferred };
 }
 
 function validateMigrationOptIns(migrationFiles, appliedVersions, environment = process.env) {
   const gatedMigrations = [
     ['002_municipality_scoping.sql', 'ENABLE_MUNICIPALITY_SCOPING_MIGRATION'],
     ['003_support_chat.sql', 'ENABLE_SUPPORT_CHAT_MIGRATION'],
-    ['004_ai_assistant.sql', 'ENABLE_AI_ASSISTANT_MIGRATION'],
   ];
   for (const [migration, enableFlag] of gatedMigrations) {
     if (migrationFiles.includes(migration) && !appliedVersions.has(migration) &&
@@ -71,10 +61,6 @@ function validateMigrationOptIns(migrationFiles, appliedVersions, environment = 
       );
     }
   }
-}
-
-function isAiAssistantSchemaReady() {
-  return !pool || aiAssistantSchemaReady;
 }
 
 async function initDatabase() {
@@ -98,15 +84,10 @@ async function initDatabase() {
       .sort();
     const appliedMigrations = await client.query('SELECT version FROM schema_migrations;');
     const appliedVersions = new Set(appliedMigrations.rows.map((row) => row.version));
-    const { migrationFiles, aiAssistantMigrationDeferred } = selectMigrationFiles(
+    const migrationFiles = selectMigrationFiles(
       allMigrationFiles,
       appliedVersions,
     );
-    if (aiAssistantMigrationDeferred) {
-      console.warn(
-        'AI assistant persistence is unavailable: migration 004 is pending and remains disabled.',
-      );
-    }
     validateMigrationOptIns(migrationFiles, appliedVersions);
 
     for (const version of migrationFiles) {
@@ -124,7 +105,6 @@ async function initDatabase() {
         throw error;
       }
     }
-    aiAssistantSchemaReady = !aiAssistantMigrationDeferred;
   } finally {
     try {
       await client.query('SELECT pg_advisory_unlock(19791104);');
@@ -631,111 +611,11 @@ async function deleteReportInDb(reportId) {
   return Number(result.rowCount || 0) > 0;
 }
 
-async function getAiAssistantConversations(residentId) {
-  if (!pool) return [];
-  const result = await pool.query(
-    `SELECT c.id, c.created_at AS "createdAt", c.updated_at AS "updatedAt",
-       (SELECT m.content
-        FROM ai_assistant_messages m
-        WHERE m.conversation_id = c.id
-        ORDER BY m.created_at DESC, m.id DESC
-        LIMIT 1) AS "lastMessage"
-     FROM ai_assistant_conversations c
-     WHERE c.resident_id = $1
-     ORDER BY c.updated_at DESC, c.created_at DESC;`,
-    [residentId],
-  );
-  return result.rows;
-}
-
-async function getAiAssistantConversation(conversationId, residentId) {
-  if (!pool) return null;
-  const result = await pool.query(
-    `SELECT id, created_at AS "createdAt", updated_at AS "updatedAt"
-     FROM ai_assistant_conversations
-     WHERE id = $1 AND resident_id = $2
-     LIMIT 1;`,
-    [conversationId, residentId],
-  );
-  return result.rows[0] || null;
-}
-
-async function createAiAssistantConversation(residentId) {
-  if (!pool) return null;
-  const result = await pool.query(
-    `INSERT INTO ai_assistant_conversations (resident_id)
-     VALUES ($1)
-     RETURNING id, created_at AS "createdAt", updated_at AS "updatedAt";`,
-    [residentId],
-  );
-  return result.rows[0] || null;
-}
-
-async function getAiAssistantMessages(conversationId) {
-  if (!pool) return [];
-  const result = await pool.query(
-    `SELECT id, conversation_id AS "conversationId", role, content,
-       created_at AS "createdAt"
-     FROM ai_assistant_messages
-     WHERE conversation_id = $1
-     ORDER BY created_at ASC, id ASC;`,
-    [conversationId],
-  );
-  return result.rows;
-}
-
-async function appendAiAssistantTurn({ conversationId, residentId, userContent, assistantContent }) {
-  if (!pool) return null;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN;');
-    const conversation = await client.query(
-      `SELECT id FROM ai_assistant_conversations
-       WHERE id = $1 AND resident_id = $2
-       FOR UPDATE;`,
-      [conversationId, residentId],
-    );
-    if (!conversation.rowCount) {
-      await client.query('ROLLBACK;');
-      return null;
-    }
-
-    const userMessage = await client.query(
-      `INSERT INTO ai_assistant_messages (conversation_id, role, content)
-       VALUES ($1, 'user', $2)
-       RETURNING id, conversation_id AS "conversationId", role, content,
-         created_at AS "createdAt";`,
-      [conversationId, userContent],
-    );
-    const assistantMessage = await client.query(
-      `INSERT INTO ai_assistant_messages (conversation_id, role, content)
-       VALUES ($1, 'assistant', $2)
-       RETURNING id, conversation_id AS "conversationId", role, content,
-         created_at AS "createdAt";`,
-      [conversationId, assistantContent],
-    );
-    await client.query(
-      `UPDATE ai_assistant_conversations
-       SET updated_at = NOW()
-       WHERE id = $1;`,
-      [conversationId],
-    );
-    await client.query('COMMIT;');
-    return [userMessage.rows[0], assistantMessage.rows[0]];
-  } catch (error) {
-    await client.query('ROLLBACK;');
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
 module.exports = {
   pool,
   initDatabase,
   selectMigrationFiles,
   validateMigrationOptIns,
-  isAiAssistantSchemaReady,
   getReportCountFromDb,
   getResidentByEmail,
   createResidentInDb,
@@ -763,10 +643,5 @@ module.exports = {
   updateReportOperationsInDb,
   deleteReportInDb,
   deleteAllReportsInDb,
-  getAiAssistantConversations,
-  getAiAssistantConversation,
-  createAiAssistantConversation,
-  getAiAssistantMessages,
-  appendAiAssistantTurn,
   DEFAULT_CATEGORIES,
 };

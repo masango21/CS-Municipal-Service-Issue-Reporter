@@ -21,11 +21,3 @@ services:
         value: https://cs-municipal-service-issue-reporter.vercel.app,https://cs-municipal-service-issue-reporter-fyjkluqj8.vercel.app,https://cs-municipal-service-issue-rep-kduvpdqcv.vercel.app
       - key: SESSION_COOKIE_SAME_SITE
         value: none
-      - key: MAIN_API_BASE_URL
-        sync: true
-      - key: OLLAMA_BASE_URL
-        value: https://ollama.com
-      - key: OLLAMA_MODEL
-        sync: false
-      - key: OLLAMA_API_KEY
-        sync: false

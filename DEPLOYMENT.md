@@ -21,38 +21,23 @@ This repository contains deployment scaffolding, but no service is deployed or v
 - `JWT_SECRET`: newly generated high-entropy secret.
 - `ADMIN_REGISTRATION_KEYS`: newly generated, comma-separated staff invitation keys.
 - `SUPER_ADMIN_BOOTSTRAP_TOKEN`: temporary high-entropy token used once to create the first super-admin; remove immediately after bootstrap.
-- `MAIN_API_BASE_URL`: the API's own HTTPS origin, for example `https://api.example.gov.za`. This server-only setting is used to verify resident sessions and fetch only the authenticated resident's reports.
-- `OLLAMA_BASE_URL`: defaults to `https://ollama.com`, the documented Ollama Cloud API host. If overridden, use a trusted HTTPS-compatible Ollama endpoint.
-- `OLLAMA_MODEL`: required model identifier available to the Ollama Cloud account. Choose the exact `name` shown in the [Cloud model catalog](https://ollama.com/search?c=cloud) or documented model-list API at <https://ollama.com/api/tags>. Do not assume the local-development `llama3.2:3b` tag is available in Cloud.
-- `OLLAMA_API_KEY`: required Ollama Cloud API key. Create it at <https://ollama.com/settings/keys> and enter it only in the Render API service's protected environment settings. Never put it in Vercel, browser code, source control, or `NEXT_PUBLIC_*`.
 - `MDB_MUNICIPALITY_FEATURE_LAYER_URL`: optional MDB point-in-polygon layer override. Verify active municipal demarcation boundaries before public launch; current item metadata says “2021” while its service description says “2018”.
 - `REVERSE_GEOCODER_URL`, `GEOCODING_USER_AGENT`, `GEOCODING_CONTACT`: server-side reverse-geocoder configuration and identifying contact. The public Nominatim endpoint is rate-limited to one request/second/application and subject to its usage policy; use a suitable provider or self-host for public traffic.
 - `ENABLE_MUNICIPALITY_SCOPING_MIGRATION=true`: set only after migration 002 passes disposable-PostgreSQL verification and production change approval. Without it, startup refuses to apply the new migration.
-- `ENABLE_AI_ASSISTANT_MIGRATION`: keep false until migration 004 passes disposable-PostgreSQL verification and separate production change approval. If 004 is pending while disabled, API startup continues with a warning and authenticated assistant routes return HTTP 503 until the schema is approved and applied. Do not set this flag to make the API start. A pending legacy migration 003 is skipped unless its own opt-in flag is enabled.
 - `CLIENT_ORIGIN`: exact HTTPS frontend origin.
 - `DATABASE_SSL=true`; use `SESSION_COOKIE_SAME_SITE=none` for cross-site Vercel/Render hostnames or `lax` for HTTPS on same-site custom domains.
 
 The Blueprint allowlist includes the current preview origin
 `https://cs-municipal-service-issue-rep-kduvpdqcv.vercel.app` in addition to the two
 existing Vercel origins. The API checks the browser's exact `Origin` on cookie-authenticated
-writes across reports, maps, and assistant routes. A new ephemeral Vercel preview hostname
-must be added as an exact origin to the Render API's `CLIENT_ORIGIN` and allowed by its CORS
-configuration. Updating `render.yaml` does not change an existing Render service until its
-Blueprint is synchronized and the service is restarted/redeployed. Prefer a stable approved
-frontend domain for ongoing use; do not allow arbitrary Vercel subdomains.
+writes across reports and maps. A new ephemeral Vercel preview hostname must be added as
+an exact origin to the Render API's `CLIENT_ORIGIN` and allowed by its CORS configuration.
+Updating `render.yaml` does not change an existing Render service until its Blueprint is
+synchronized and the service is restarted/redeployed. Prefer a stable approved frontend
+domain for ongoing use; do not allow arbitrary Vercel subdomains.
 
-Production startup refuses to use JSON file storage. The API applies versioned SQL files under `server/sql/migrations/` at startup. A pending migration 002 still blocks startup unless its separately verified gate is enabled. A pending migration 004 alone is deferred, with AI conversation routes unavailable (HTTP 503); it is never applied unless its dedicated flag is explicitly enabled after disposable-database validation and separate production approval. The API does not seed reports, residents, or staff accounts.
+Production startup refuses to use JSON file storage. The API applies approved versioned SQL files under `server/sql/migrations/` at startup. A pending migration 002 still blocks startup unless its separately verified gate is enabled. Migration 004 is retained but excluded from automatic application; any existing assistant-related tables and records remain untouched pending a separately approved database cleanup. The API does not seed reports, residents, or staff accounts.
 
-The Render Blueprint runs the Node API; inference is handled by Ollama Cloud, not by a local model process on Render. The backend calls the documented `https://ollama.com/api/chat` endpoint with `Authorization: Bearer <OLLAMA_API_KEY>`, `stream: false`, and reads the answer from `message.content`. Use the exact model name available to the account from the Cloud model catalog or documented model-list API. The Ollama documentation currently uses `gemma4:31b` as an example, but this does not verify availability for this account, so the application does not configure it as a default. In production, the backend requires an explicit model and API key, validates HTTPS/non-loopback URLs, and returns safe errors for missing configuration, authentication failures, model errors, rate limits, upstream errors, network failures, and timeouts.
-
-The Blueprint sets `OLLAMA_BASE_URL=https://ollama.com` and prompts for `OLLAMA_MODEL` and `OLLAMA_API_KEY` in the Render dashboard. Existing Render services do not read `.env.example`, and changes to `render.yaml` do not change a running service until the Blueprint is synchronized and a deployment is initiated. For an existing service, set `OLLAMA_MODEL` to an identifier available to your Cloud account and enter `OLLAMA_API_KEY` securely in the Render API service environment. Do not use a local `localhost` URL in Render. This repository does not verify account access or make a live Cloud request.
-
-Assistant routes are part of the existing main API; the client proxies `/api/assistant/*` to the same configured API origin as other application requests. No second API service is required. PostgreSQL-backed conversation history depends on migration 004. Until it is verified on a disposable PostgreSQL branch and separately approved, leave `ENABLE_AI_ASSISTANT_MIGRATION` unset or false: the API can start, but chat requests return HTTP 503. This change does not verify, enable, or apply migration 004.
-
-No Ollama settings belong in Vercel. Keep `API_BASE_URL` configured as documented for the
-existing Next.js-to-Render API rewrite, and preserve the exact `CLIENT_ORIGIN` allowlist for
-the stable frontend and explicitly approved preview origins. Ollama credentials and model
-selection remain exclusively on the Render API.
 
 ## Vercel Client
 

@@ -4,7 +4,7 @@
 
 The Vercel build for commit `77e72e8` stops in `client/next.config.ts` before compiling
 because production builds intentionally require a non-empty `API_BASE_URL`. The client
-rewrites `/api/*` and `/api/assistant/*` to this backend origin. The check prevents a
+rewrites `/api/*` to this backend origin. The check prevents a
 successful production build whose API calls would target localhost or have no valid
 destination.
 
