@@ -62,7 +62,7 @@ export default function TermsPage() {
 
       <section className={sectionClass} aria-labelledby="terms-third-party">
         <h2 id="terms-third-party" className={headingClass}>10. Third-Party Services</h2>
-        <p className={paragraphClass}>Map tiles and place search use OpenStreetMap services; municipality boundary data is attributed to the Municipal Demarcation Board. Use of those services is subject to their own terms and policies. The application does not control their availability or data practices.</p>
+        <p className={paragraphClass}>Map tiles use the OpenStreetMap standard raster tile service, and place search uses OpenStreetMap Nominatim. The map displays OpenStreetMap attribution. Municipality boundary data is attributed to the Municipal Demarcation Board. Use of these services is subject to their own terms and policies, including the OpenStreetMap tile usage policy. The application does not control their availability or data practices.</p>
       </section>
 
       <section className={sectionClass} aria-labelledby="terms-suspension">

@@ -47,7 +47,7 @@ export default function PrivacyPage() {
 
       <section className={sectionClass} aria-labelledby="privacy-third-parties">
         <h2 id="privacy-third-parties" className={headingClass}>7. Third-Party Services</h2>
-        <p className={paragraphClass}>Maps use Leaflet and OpenStreetMap map tiles. Place search and default geocoding use OpenStreetMap Nominatim. Municipality boundary resolution uses Municipal Demarcation Board data. Those services are operated outside this application; their own terms and privacy practices apply. This project does not establish their data-retention practices. Review provider terms and usage limits before public deployment.</p>
+        <p className={paragraphClass}>Maps use Leaflet and OpenStreetMap raster tiles. Place search and default geocoding use OpenStreetMap Nominatim. Municipality boundary resolution uses Municipal Demarcation Board data. Those services are operated outside this application; their own terms and privacy practices apply. This project does not establish their data-retention practices. Review provider terms and usage limits before public deployment.</p>
       </section>
 
       <section className={sectionClass} aria-labelledby="privacy-sharing">

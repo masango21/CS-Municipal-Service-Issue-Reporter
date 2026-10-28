@@ -559,6 +559,8 @@ export function MapView({
   const [isSearching, setIsSearching] = useState(false);
   const [isLocating, setIsLocating] = useState(false);
   const [zoom, setZoom] = useState(6);
+  const [hasTileError, setHasTileError] = useState(false);
+  const tileResults = useRef({ failed: 0 });
   const validIssues = useMemo(() => uniqueLocatedIssues(issues), [issues]);
   const clusters = useMemo(
     () => createReportClusters(validIssues, zoom),
@@ -690,7 +692,19 @@ export function MapView({
           {density && <ProvinceLayer density={density} />}
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+            eventHandlers={{
+              loading: () => {
+                tileResults.current = { failed: 0 };
+              },
+              tileerror: () => {
+                tileResults.current.failed += 1;
+                setHasTileError(true);
+              },
+              load: () => {
+                setHasTileError(tileResults.current.failed > 0);
+              },
+            }}
           />
 
           <MapZoomTracker onZoomChange={onZoomChange} />
@@ -745,6 +759,12 @@ export function MapView({
           )}
         </MapContainer>
       </div>
+
+      {hasTileError && (
+        <p role="status" className="text-sm text-amber-800">
+          Some road-map tiles could not be loaded. Check your connection and reload the map.
+        </p>
+      )}
 
       <ReportMapLegend
         categories={categories}
