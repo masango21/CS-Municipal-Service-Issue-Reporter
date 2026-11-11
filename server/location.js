@@ -32,14 +32,49 @@ function validateCoordinates(latitude, longitude) {
     latitude >= -35.5 && latitude <= -22 && longitude >= 16 && longitude <= 33;
 }
 
+function safeProviderErrorCode(error) {
+  const code = error?.code;
+  if (typeof code !== 'string') return 'unknown';
+  if (/^http_\d{3}$/.test(code)) return code;
+  if (['timeout', 'network_error', 'invalid_response', 'provider_error'].includes(code)) return code;
+  return 'unknown';
+}
+
 async function requestJson(url, fetchImpl, headers = {}) {
-  const response = await fetchImpl(url, {
-    headers: { Accept: 'application/json', ...headers },
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!response.ok) throw new Error('Location provider request failed');
-  const payload = await response.json();
-  if (payload.error) throw new Error('Location provider returned an error');
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      headers: { Accept: 'application/json', ...headers },
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch (error) {
+    const requestError = new Error('Location provider request failed');
+    requestError.code = error?.name === 'TimeoutError' ? 'timeout' : 'network_error';
+    throw requestError;
+  }
+  if (!response.ok) {
+    const requestError = new Error('Location provider request failed');
+    requestError.code = `http_${response.status || 'unknown'}`;
+    throw requestError;
+  }
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    const requestError = new Error('Location provider returned an invalid response');
+    requestError.code = 'invalid_response';
+    throw requestError;
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    const requestError = new Error('Location provider returned an invalid response');
+    requestError.code = 'invalid_response';
+    throw requestError;
+  }
+  if (payload.error) {
+    const requestError = new Error('Location provider returned an error');
+    requestError.code = 'provider_error';
+    throw requestError;
+  }
   return payload;
 }
 
@@ -141,11 +176,23 @@ async function reverseGeocode(latitude, longitude, options = {}) {
 
   const contact = process.env.GEOCODING_CONTACT;
   const userAgent = process.env.GEOCODING_USER_AGENT || `${DEFAULT_USER_AGENT}${contact ? ` (${contact})` : ''}`;
-  const payload = await requestJson(url, fetchImpl, { 'User-Agent': userAgent });
-  if (!payload.display_name) return null;
+  let payload;
+  try {
+    payload = await requestJson(url, fetchImpl, { 'User-Agent': userAgent });
+  } catch (error) {
+    if (error.code === 'http_404') {
+      reverseCache.set(cacheKey, null);
+      return null;
+    }
+    throw error;
+  }
+  if (typeof payload.display_name !== 'string' || !payload.display_name.trim()) {
+    reverseCache.set(cacheKey, null);
+    return null;
+  }
 
   const result = {
-    address: String(payload.display_name),
+    address: payload.display_name.trim(),
     city: municipalityFromAddress(payload.address),
     attribution: '© OpenStreetMap contributors',
   };
@@ -163,10 +210,19 @@ async function resolveLocation(latitude, longitude, options = {}) {
   const municipality = municipalityResult.status === 'fulfilled' ? municipalityResult.value : null;
   const address = addressResult.status === 'fulfilled' ? addressResult.value : null;
   if (!municipality) return null;
+  const addressLookupStatus = addressResult.status === 'rejected'
+    ? 'unavailable'
+    : address ? 'found' : 'not_found';
+  if (addressLookupStatus === 'unavailable') {
+    console.warn('Reverse geocoder request failed:', {
+      code: safeProviderErrorCode(addressResult.reason),
+    });
+  }
   return {
     latitude,
     longitude,
     address: address?.address || '',
+    addressLookupStatus,
     city: address?.city || municipality.name,
     municipality: municipality.name,
     municipalityId: municipality.code,
@@ -181,6 +237,7 @@ async function resolveLocation(latitude, longitude, options = {}) {
 module.exports = {
   DEFAULT_MDB_LAYER_URL,
   DEFAULT_REVERSE_GEOCODER_URL,
+  safeProviderErrorCode,
   resolveMunicipality,
   listOfficialMunicipalities,
   reverseGeocode,

@@ -119,6 +119,7 @@ beforeEach(() => {
     boundarySource: testMunicipality.boundarySource,
     boundaryDataset: testMunicipality.boundaryDataset,
     geocodingAttribution: 'Test attribution',
+    addressLookupStatus: 'found',
   });
   app.locals.municipalityLister = async () => [{
     ...testMunicipality,
@@ -648,6 +649,23 @@ test('location lookup returns only authoritative municipality data and reports p
   assert.equal(resolved.body.location.longitude, payload.longitude);
   assert.equal(resolved.body.location.municipality, testMunicipality.name);
   assert.equal(resolved.body.location.address, 'Test address');
+  assert.equal(resolved.body.addressLookupStatus, 'found');
+
+  const testResolvedLocation = await app.locals.locationResolver(payload.latitude, payload.longitude);
+  app.locals.locationResolver = async () => ({
+    ...testResolvedLocation,
+    address: '',
+    addressLookupStatus: 'unavailable',
+  });
+  const addressUnavailable = await request('/api/location/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: residentAuthorization },
+    body: JSON.stringify(payload),
+  });
+  assert.equal(addressUnavailable.status, 200);
+  assert.equal(addressUnavailable.body.addressLookupStatus, 'unavailable');
+  assert.equal(addressUnavailable.body.location.latitude, payload.latitude);
+  assert.equal(addressUnavailable.body.location.municipality, testMunicipality.name);
 
   app.locals.locationResolver = async () => {
     throw new Error('private geocoder endpoint details');
@@ -715,6 +733,7 @@ test('report lifecycle creates and removes a report without leaving seeded data 
   assert.equal(createResponse.body.report.location.longitude, payload.location.longitude);
   assert.equal(createResponse.body.report.location.address, 'Test address');
   assert.equal(createResponse.body.report.location.municipality, testMunicipality.name);
+  assert.equal(Object.hasOwn(createResponse.body.report.location, 'addressLookupStatus'), false);
   assert.equal(createResponse.body.report.priority, payload.priority);
   assert.equal(createResponse.body.report.category, payload.category);
   assert.equal(createResponse.body.report.reportedBy, undefined);

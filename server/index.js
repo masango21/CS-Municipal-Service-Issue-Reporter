@@ -42,7 +42,11 @@ const {
   DEFAULT_CATEGORIES,
   pool,
 } = require('./db');
-const { listOfficialMunicipalities, resolveLocation } = require('./location');
+const {
+  listOfficialMunicipalities,
+  resolveLocation,
+  safeProviderErrorCode,
+} = require('./location');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -673,20 +677,21 @@ app.post('/api/location/resolve', requireResident, locationRateLimiter, async (r
     if (!location) {
       return res.status(422).json({ message: "We couldn't determine the municipality for this location. Please move the pin and try again." });
     }
+    const { addressLookupStatus, ...confirmedLocation } = location;
     const municipalitySaver = app.locals.municipalitySaver || saveMunicipalityRecord;
     await municipalitySaver({
-      id: location.municipalityId,
-      code: location.municipalityId,
-      name: location.municipality,
-      province: location.province,
-      type: location.municipalityType,
-      boundarySource: location.boundarySource,
-      boundaryDataset: location.boundaryDataset,
+      id: confirmedLocation.municipalityId,
+      code: confirmedLocation.municipalityId,
+      name: confirmedLocation.municipality,
+      province: confirmedLocation.province,
+      type: confirmedLocation.municipalityType,
+      boundarySource: confirmedLocation.boundarySource,
+      boundaryDataset: confirmedLocation.boundaryDataset,
     });
-    return res.status(200).json({ location });
+    return res.status(200).json({ location: confirmedLocation, addressLookupStatus });
   } catch (error) {
     console.error('Location resolution failed:', {
-      code: typeof error?.code === 'string' ? error.code : 'unknown',
+      code: safeProviderErrorCode(error),
     });
     return res.status(503).json({ message: 'Location services are temporarily unavailable. Please try again.' });
   }
@@ -1208,7 +1213,9 @@ app.post('/api/reports', reportRateLimiter, requireResident, async (req, res) =>
       return res.status(422).json({ message: "We couldn't determine the municipality for this location. Please move the pin and try again." });
     }
   } catch (error) {
-    console.error('Report location resolution failed:', error.message);
+    console.error('Report location resolution failed:', {
+      code: safeProviderErrorCode(error),
+    });
     return res.status(503).json({ message: 'Location services are temporarily unavailable. Please try again.' });
   }
 
@@ -1232,6 +1239,7 @@ app.post('/api/reports', reportRateLimiter, requireResident, async (req, res) =>
   }
   if (!municipality?.active) return res.status(422).json({ message: 'This municipality is not accepting reports right now.' });
   resolvedLocation.municipalityId = municipality.id;
+  delete resolvedLocation.addressLookupStatus;
 
   if (pool || app.locals.reportCreator) {
     try {

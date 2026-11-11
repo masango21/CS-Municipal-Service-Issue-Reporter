@@ -22,19 +22,19 @@ This repository contains deployment scaffolding, but no service is deployed or v
 - `ADMIN_REGISTRATION_KEYS`: newly generated, comma-separated staff invitation keys.
 - `SUPER_ADMIN_BOOTSTRAP_TOKEN`: temporary high-entropy token used once to create the first super-admin; remove immediately after bootstrap.
 - `MDB_MUNICIPALITY_FEATURE_LAYER_URL`: optional MDB point-in-polygon layer override. Verify active municipal demarcation boundaries before public launch; current item metadata says “2021” while its service description says “2018”.
-- `REVERSE_GEOCODER_URL`, `GEOCODING_USER_AGENT`, `GEOCODING_CONTACT`: server-side reverse-geocoder configuration and identifying contact. The public Nominatim endpoint is rate-limited to one request/second/application and subject to its usage policy; use a suitable provider or self-host for public traffic.
+- `REVERSE_GEOCODER_URL`, `GEOCODING_USER_AGENT`, `GEOCODING_CONTACT`: server-side reverse-geocoder configuration and identifying contact. Configure a real operational contact when using public Nominatim. Its endpoint is rate-limited to one request/second/application and subject to its usage policy; use a suitable provider or self-host for public traffic. An unavailable geocoder or a pin with no address result does not invalidate confirmed coordinates or municipality.
 - `ENABLE_MUNICIPALITY_SCOPING_MIGRATION=true`: set only after migration 002 passes disposable-PostgreSQL verification and production change approval. Without it, startup refuses to apply the new migration.
 - `CLIENT_ORIGIN`: exact HTTPS frontend origin.
 - `DATABASE_SSL=true`; use `SESSION_COOKIE_SAME_SITE=none` for cross-site Vercel/Render hostnames or `lax` for HTTPS on same-site custom domains.
 
-The Blueprint allowlist includes the current preview origin
-`https://cs-municipal-service-issue-rep-kduvpdqcv.vercel.app` in addition to the two
-existing Vercel origins. The API checks the browser's exact `Origin` on cookie-authenticated
-writes across reports and maps. A new ephemeral Vercel preview hostname must be added as
-an exact origin to the Render API's `CLIENT_ORIGIN` and allowed by its CORS configuration.
-Updating `render.yaml` does not change an existing Render service until its Blueprint is
-synchronized and the service is restarted/redeployed. Prefer a stable approved frontend
-domain for ongoing use; do not allow arbitrary Vercel subdomains.
+The Blueprint allowlist includes the screenshot's preview origin
+`https://cs-municipal-service-issue-reporter-p2rqt32e9.vercel.app` alongside the three
+existing exact Vercel origins. The API checks the browser's exact `Origin` on
+cookie-authenticated writes across reports and maps. A new ephemeral Vercel preview hostname
+must be added as an exact origin to the Render API's `CLIENT_ORIGIN` and allowed by its CORS
+configuration. Updating `render.yaml` does not change an existing Render service until its
+Blueprint is synchronized and the service is restarted/redeployed. Prefer a stable approved
+frontend domain for ongoing use; do not allow arbitrary Vercel subdomains.
 
 Production startup refuses to use JSON file storage. The API applies approved versioned SQL files under `server/sql/migrations/` at startup. A pending migration 002 still blocks startup unless its separately verified gate is enabled. Migration 004 is retained but excluded from automatic application; any existing assistant-related tables and records remain untouched pending a separately approved database cleanup. The API does not seed reports, residents, or staff accounts.
 

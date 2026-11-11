@@ -23,6 +23,7 @@ type ReportValidationErrors = {
   location?: string;
   priority?: string;
 };
+type AddressLookupStatus = "found" | "not_found" | "unavailable";
 
 export default function ReportIssuePage() {
   const router = useRouter();
@@ -38,6 +39,7 @@ export default function ReportIssuePage() {
   const [imageName, setImageName] = useState("");
   const [fileError, setFileError] = useState("");
   const [selectedLocation, setSelectedLocation] = useState<IssueLocation | null>(null);
+  const [addressLookupStatus, setAddressLookupStatus] = useState<AddressLookupStatus | null>(null);
   const [locationLookupVersion, setLocationLookupVersion] = useState(0);
   const [locationStatus, setLocationStatus] = useState<"idle" | "loading" | "resolved" | "error">("idle");
   const [locationError, setLocationError] = useState("");
@@ -72,12 +74,17 @@ export default function ReportIssuePage() {
       signal: controller.signal,
     })
       .then(async (response) => {
-        const payload = await response.json() as { location?: IssueLocation; message?: string };
+        const payload = await response.json() as {
+          location?: IssueLocation;
+          addressLookupStatus?: AddressLookupStatus;
+          message?: string;
+        };
         if (!response.ok || !payload.location?.municipalityId) {
           throw new Error(payload.message ?? "We couldn't determine the municipality for this location. Please move the pin and try again.");
         }
         if (!active) return;
         setSelectedLocation(payload.location);
+        setAddressLookupStatus(payload.addressLookupStatus ?? (payload.location.address ? "found" : "not_found"));
         setLocationStatus("resolved");
       })
       .catch((lookupError: unknown) => {
@@ -97,6 +104,7 @@ export default function ReportIssuePage() {
     setLocationError("");
     setError("");
     setSelectedLocation({ latitude: location.latitude, longitude: location.longitude });
+    setAddressLookupStatus(null);
     setLocationLookupVersion((version) => version + 1);
     setValidationErrors((current) => ({ ...current, location: undefined }));
   };
@@ -161,6 +169,7 @@ export default function ReportIssuePage() {
 
   const handleResetSelection = () => {
     setSelectedLocation(null);
+    setAddressLookupStatus(null);
     setLocationStatus("idle");
     setLocationError("");
     setCategory("");
@@ -312,7 +321,9 @@ export default function ReportIssuePage() {
               <div>
                 <p className="text-xs font-semibold uppercase text-slate-500">{t("addressLabel")}</p>
                 <p className="mt-1 text-sm text-slate-800">
-                  {locationStatus === "loading" ? "Finding address..." : selectedLocation?.address || "Select a point on the map"}
+                  {locationStatus === "loading"
+                    ? "Finding address..."
+                    : selectedLocation?.address || (locationStatus === "resolved" ? "Address unavailable" : "Select a point on the map")}
                 </p>
               </div>
               <div>
@@ -323,8 +334,14 @@ export default function ReportIssuePage() {
               </div>
               {locationStatus === "error" && <p role="alert" className="text-sm text-rose-700">{locationError}</p>}
               {validationErrors.location && <p id="location-error" role="alert" className="text-sm text-rose-700">{validationErrors.location}</p>}
-              {locationStatus === "resolved" && !selectedLocation?.address && (
-                <p role="status" className="text-sm text-amber-800">Address could not be detected. The selected coordinates and municipality are confirmed.</p>
+              {locationStatus === "resolved" && addressLookupStatus === "not_found" && (
+                <p role="status" className="text-sm text-amber-800">No street address was found for this pin. The selected coordinates and municipality are confirmed.</p>
+              )}
+              {locationStatus === "resolved" && addressLookupStatus === "unavailable" && (
+                <p role="status" className="text-sm text-amber-800">Street address lookup is temporarily unavailable. The selected coordinates and municipality are confirmed, and you can still submit this report.</p>
+              )}
+              {locationStatus === "resolved" && !selectedLocation?.address && !addressLookupStatus && (
+                <p role="status" className="text-sm text-amber-800">No street address is available for this pin. The selected coordinates and municipality are confirmed.</p>
               )}
               {selectedLocation?.geocodingAttribution && (
                 <p className="text-xs text-slate-500">{selectedLocation.geocodingAttribution}</p>
